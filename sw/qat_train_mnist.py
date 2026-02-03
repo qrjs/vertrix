@@ -11,132 +11,68 @@ INPUT_SIZE = 28
 CONV1_OUT_CHANNELS = 3
 CONV2_OUT_CHANNELS = 6
 FC1_IN = 294  # 7*7*6
-FC1_OUT = 120
-FC2_OUT = 1024
+FC1_OUT = 64
+FC2_OUT = 32
 FC3_OUT = 10
 
-
-class QuantizedLinear(nn.Module):
-    def __init__(self, in_features, out_features, bit_width=8, bias=True):
-        super(QuantizedLinear, self).__init__()
-        self.in_features = in_features
-        self.out_features = out_features
-        self.bit_width = bit_width
-        
-        self.weight = nn.Parameter(torch.Tensor(out_features, in_features))
-        if bias:
-            self.bias = nn.Parameter(torch.Tensor(out_features))
-        else:
-            self.register_parameter('bias', None)
-        
-        nn.init.kaiming_uniform_(self.weight, a=torch.nn.init.calculate_gain('relu'))
-        if self.bias is not None:
-            nn.init.zeros_(self.bias)
-        
-        if bit_width == 1:
-            self.qmin, self.qmax = -1, 1
-        elif bit_width == 2:
-            self.qmin, self.qmax = -2, 1
-        elif bit_width == 4:
-            self.qmin, self.qmax = -8, 7
-        else:
-            self.qmin, self.qmax = -128, 127
-    
-    def quantize_weight(self, weight):
-        # 计算scale：将权重范围映射到[qmin, qmax]
-        weight_max = torch.max(torch.abs(weight))
-        if weight_max == 0:
-            scale = 1.0
-        else:
-            scale = weight_max / self.qmax
-        
-        if self.bit_width == 1:
-            weight_q = torch.where(
-                weight >= 0,
-                torch.tensor(1.0, device=weight.device),
-                torch.tensor(-1.0, device=weight.device),
-            )
-        else:
-            weight_q = torch.clamp(torch.round(weight / scale), self.qmin, self.qmax)
-        
-        weight_dq = weight_q * scale
-        
-        return weight + (weight_dq - weight).detach()
-    
-    def forward(self, x):
-        # 对权重进行量化感知训练
-        weight_q = self.quantize_weight(self.weight)
-        return F.linear(x, weight_q, self.bias)
-    
-    def extra_repr(self):
-        return f'in_features={self.in_features}, out_features={self.out_features}, bit_width={self.bit_width}'
+# 内存分析 (int8权重):
+# conv1: 3*1*3*3 = 27 bytes
+# conv2: 6*3*3*3 = 162 bytes
+# fc1: 64*294 = 18,816 bytes (~18KB)
+# fc2: 32*64 = 2,048 bytes (~2KB)
+# fc3: 10*32 = 320 bytes
+# 总计: ~21KB (可放入248KB RAM)
 
 
 class MNISTQATNet(nn.Module):
-    """MNIST QAT网络，包含真正的多比特量化分支"""
+    """MNIST QAT网络，全部使用int8量化，无偏置"""
     def __init__(self):
         super(MNISTQATNet, self).__init__()
         
-        # Conv layers - 使用标准层，后面会用int8量化
-        self.conv1 = nn.Conv2d(1, CONV1_OUT_CHANNELS, kernel_size=3, stride=1, padding=1)
+        # Conv layers - 无偏置
+        self.conv1 = nn.Conv2d(1, CONV1_OUT_CHANNELS, kernel_size=3, stride=1, padding=1, bias=False)
         self.relu1 = nn.ReLU()
         self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2)
         
-        self.conv2 = nn.Conv2d(CONV1_OUT_CHANNELS, CONV2_OUT_CHANNELS, kernel_size=3, stride=1, padding=1)
+        self.conv2 = nn.Conv2d(CONV1_OUT_CHANNELS, CONV2_OUT_CHANNELS, kernel_size=3, stride=1, padding=1, bias=False)
         self.relu2 = nn.ReLU()
         self.pool2 = nn.MaxPool2d(kernel_size=2, stride=2)
         
-        # FC layers - 使用标准层
-        self.fc1 = nn.Linear(FC1_IN, FC1_OUT)
+        # FC layers - 无偏置
+        self.fc1 = nn.Linear(FC1_IN, FC1_OUT, bias=False)
         self.relu3 = nn.ReLU()
         
-        self.fc2 = nn.Linear(FC1_OUT, FC2_OUT)
+        self.fc2 = nn.Linear(FC1_OUT, FC2_OUT, bias=False)
         self.relu4 = nn.ReLU()
         
-        # FC3 三路分支 - 使用自定义量化层，不同bit宽
-        self.fc3_1bit = QuantizedLinear(FC2_OUT, FC3_OUT, bit_width=1)
-        self.fc3_2bit = QuantizedLinear(FC2_OUT, FC3_OUT, bit_width=2)
-        self.fc3_4bit = QuantizedLinear(FC2_OUT, FC3_OUT, bit_width=4)
+        self.fc3 = nn.Linear(FC2_OUT, FC3_OUT, bias=False)
         
-        # 用于量化前面层的fake quantize
-        self.register_buffer('conv1_weight_scale', torch.tensor(1.0))
-        self.register_buffer('conv2_weight_scale', torch.tensor(1.0))
-        self.register_buffer('fc1_weight_scale', torch.tensor(1.0))
-        self.register_buffer('fc2_weight_scale', torch.tensor(1.0))
-        
-    def quantize_conv_weight(self, weight, scale_name):
-        """对卷积层权重进行int8量化感知"""
+    def quantize_weight(self, weight):
+        """对权重进行int8量化感知"""
         weight_max = torch.max(torch.abs(weight))
         if weight_max == 0:
             scale = torch.tensor(1.0, device=weight.device)
         else:
             scale = weight_max / 127.0
         
-        # 更新scale
-        setattr(self, scale_name, scale)
-        
         # 量化和反量化
         weight_q = torch.clamp(torch.round(weight / scale), -128, 127)
         weight_dq = weight_q * scale
         
         # Straight-through estimator
-        return weight_dq + (weight - weight).detach()
+        return weight + (weight_dq - weight).detach()
     
-    def quantize_fc_weight(self, weight, scale_name):
-        """对全连接层权重进行int8量化感知"""
-        return self.quantize_conv_weight(weight, scale_name)
-    
-    def forward(self, x, branch='4bit'):
+    def forward(self, x):
         # Conv1 with quantization
-        weight_q = self.quantize_conv_weight(self.conv1.weight, 'conv1_weight_scale')
-        x = F.conv2d(x, weight_q, self.conv1.bias, 
+        weight_q = self.quantize_weight(self.conv1.weight)
+        x = F.conv2d(x, weight_q, bias=None, 
                      stride=self.conv1.stride, padding=self.conv1.padding)
         x = self.relu1(x)
         x = self.pool1(x)
         
         # Conv2 with quantization
-        weight_q = self.quantize_conv_weight(self.conv2.weight, 'conv2_weight_scale')
-        x = F.conv2d(x, weight_q, self.conv2.bias,
+        weight_q = self.quantize_weight(self.conv2.weight)
+        x = F.conv2d(x, weight_q, bias=None,
                      stride=self.conv2.stride, padding=self.conv2.padding)
         x = self.relu2(x)
         x = self.pool2(x)
@@ -145,22 +81,18 @@ class MNISTQATNet(nn.Module):
         x = x.reshape(x.size(0), -1)
         
         # FC1 with quantization
-        weight_q = self.quantize_fc_weight(self.fc1.weight, 'fc1_weight_scale')
-        x = F.linear(x, weight_q, self.fc1.bias)
+        weight_q = self.quantize_weight(self.fc1.weight)
+        x = F.linear(x, weight_q, bias=None)
         x = self.relu3(x)
         
         # FC2 with quantization
-        weight_q = self.quantize_fc_weight(self.fc2.weight, 'fc2_weight_scale')
-        x = F.linear(x, weight_q, self.fc2.bias)
+        weight_q = self.quantize_weight(self.fc2.weight)
+        x = F.linear(x, weight_q, bias=None)
         x = self.relu4(x)
         
-        # FC3 分支 - 使用不同bit宽的量化层
-        if branch == '1bit':
-            x = self.fc3_1bit(x)
-        elif branch == '2bit':
-            x = self.fc3_2bit(x)
-        else:  # 4bit
-            x = self.fc3_4bit(x)
+        # FC3 with quantization
+        weight_q = self.quantize_weight(self.fc3.weight)
+        x = F.linear(x, weight_q, bias=None)
         
         return x
 
@@ -193,25 +125,15 @@ def train_one_epoch(model, device, train_loader, optimizer, criterion, epoch):
         
         optimizer.zero_grad()
         
-        # 三个分支的输出和损失
-        output_1bit = model(data, '1bit')
-        output_2bit = model(data, '2bit')
-        output_4bit = model(data, '4bit')
-        
-        loss_1bit = criterion(output_1bit, target)
-        loss_2bit = criterion(output_2bit, target)
-        loss_4bit = criterion(output_4bit, target)
-        
-        # 总损失 - 可以调整权重
-        loss = loss_1bit + loss_2bit + loss_4bit
+        output = model(data)
+        loss = criterion(output, target)
         
         loss.backward()
         optimizer.step()
         
         running_loss += loss.item()
         
-        # 使用4bit分支计算准确率
-        _, predicted = output_4bit.max(1)
+        _, predicted = output.max(1)
         total += target.size(0)
         correct += predicted.eq(target).sum().item()
         
@@ -230,44 +152,26 @@ def test(model, device, test_loader, criterion):
     """测试模型"""
     model.eval()
     test_loss = 0
-    correct_1bit = 0
-    correct_2bit = 0
-    correct_4bit = 0
+    correct = 0
     total = 0
     
     with torch.no_grad():
         for data, target in test_loader:
             data, target = data.to(device), target.to(device)
             
-            output_1bit = model(data, '1bit')
-            output_2bit = model(data, '2bit')
-            output_4bit = model(data, '4bit')
+            output = model(data)
+            test_loss += criterion(output, target).item()
             
-            loss_1bit = criterion(output_1bit, target)
-            loss_2bit = criterion(output_2bit, target)
-            loss_4bit = criterion(output_4bit, target)
-            test_loss += (loss_1bit + loss_2bit + loss_4bit).item()
-            
-            _, pred_1bit = output_1bit.max(1)
-            _, pred_2bit = output_2bit.max(1)
-            _, pred_4bit = output_4bit.max(1)
-            
+            _, predicted = output.max(1)
             total += target.size(0)
-            correct_1bit += pred_1bit.eq(target).sum().item()
-            correct_2bit += pred_2bit.eq(target).sum().item()
-            correct_4bit += pred_4bit.eq(target).sum().item()
+            correct += predicted.eq(target).sum().item()
     
     test_loss /= len(test_loader)
-    acc_1bit = 100. * correct_1bit / total
-    acc_2bit = 100. * correct_2bit / total
-    acc_4bit = 100. * correct_4bit / total
+    accuracy = 100. * correct / total
     
-    print(f'\nTest set: Avg loss: {test_loss:.4f}')
-    print(f'1-bit branch Accuracy: {acc_1bit:.2f}%')
-    print(f'2-bit branch Accuracy: {acc_2bit:.2f}%')
-    print(f'4-bit branch Accuracy: {acc_4bit:.2f}%\n')
+    print(f'\nTest set: Avg loss: {test_loss:.4f}, Accuracy: {accuracy:.2f}%\n')
     
-    return test_loss, acc_1bit, acc_2bit, acc_4bit
+    return test_loss, accuracy
 
 
 def main():
@@ -279,10 +183,7 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f'Using device: {device}')
     print('\n=== Quantization Configuration ===')
-    print('Conv1/Conv2/FC1/FC2: int8 (8-bit) quantization')
-    print('fc3_1bit: 1-bit weight quantization')
-    print('fc3_2bit: 2-bit weight quantization')
-    print('fc3_4bit: 4-bit weight quantization')
+    print('All layers: int8 (8-bit) quantization, no bias')
     print('===================================\n')
     
     # 数据
@@ -302,11 +203,14 @@ def main():
     
     # 训练
     print('Starting Quantization-Aware Training...')
+    best_acc = 0.0
     for epoch in range(1, epochs + 1):
         train_loss, train_acc = train_one_epoch(model, device, train_loader, 
                                                  optimizer, criterion, epoch)
-        test_loss, acc_1bit, acc_2bit, acc_4bit = test(model, device, 
-                                                         test_loader, criterion)
+        test_loss, test_acc = test(model, device, test_loader, criterion)
+        
+        if test_acc > best_acc:
+            best_acc = test_acc
     
     # 保存模型
     model.eval()
@@ -314,10 +218,7 @@ def main():
     torch.save(model.state_dict(), 'models/mnist_qat_quantized.pth')
     
     print('\nTraining completed! Model saved to models/')
-    print(f'Final accuracies:')
-    print(f'  1-bit: {acc_1bit:.2f}%')
-    print(f'  2-bit: {acc_2bit:.2f}%')
-    print(f'  4-bit: {acc_4bit:.2f}%')
+    print(f'Best accuracy: {best_acc:.2f}%')
     
     return model
 

@@ -89,8 +89,9 @@ $(TESTS_ALL): %: $$(addsuffix .vmem,$$(basename $$(if $$(wildcard %),$$(wildcard
 	    sim_dir=`mktemp -d`;                                                  \
 	    echo "[INFO] Writing temporary files to $${sim_dir}";                 \
 	    make -f $(TEST_DIR)/../sim/Makefile $(SIMULATOR) PROJ_DIR=$$sim_dir   \
-	        $$line PROG_PATHS=progs.txt SIM_ABORT_CYCLES=10000 ENABLE_SVA=1   \
-	        TRACE_SIGS="`cat $(TEST_DIR)/trace-sigs.conf`" >sim.log 2>&1;     \
+	        $$line PROG_PATHS=progs.txt SIM_ABORT_CYCLES=20000000 ENABLE_SVA=1   \
+	        ENABLE_PERF_COUNTERS=1                                                \
+	        TRACE_SIGS="`cat $(TEST_DIR)/trace-sigs.conf`" 2>&1 | tee sim.log; \
 	    if [ $$? -ne 0 ]; then                                                \
 	        printf "\033[0;31m[FAIL]\033[0;0m $@ simulation error; ";         \
 	        if [ -z "$(FULL_LOG)" ] || [ "$(FULL_LOG)" = "0" ]; then          \

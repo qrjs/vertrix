@@ -22,7 +22,8 @@ module ibex_cs_registers #(
     parameter int unsigned      MHPMCounterNum    = 10,
     parameter int unsigned      MHPMCounterWidth  = 40,
     parameter ibex_pkg::rv32m_e RV32M             = ibex_pkg::RV32MFast,
-    parameter int unsigned      ExternalCSRs      = 0
+    parameter int unsigned      ExternalCSRs      = 0,
+    parameter int unsigned      VLEN              = 128  // Vector register length in bits
 ) (
     // Clock and Reset
     input  logic                 clk_i,
@@ -44,11 +45,29 @@ module ibex_cs_registers #(
     input                        csr_op_en_i,
     output logic [31:0]          csr_rdata_o,
 
-    // External CSR
-    input  logic [11:0]          ecsr_addr_i [ExternalCSRs],
-    input  logic [31:0]          ecsr_rdata_i[ExternalCSRs],
-    output logic                 ecsr_we_o   [ExternalCSRs],
-    output logic [31:0]          ecsr_wdata_o[ExternalCSRs],
+    // External CSR (array size must be at least 1 for Verilator)
+    input  logic [11:0]          ecsr_addr_i [ExternalCSRs > 0 ? ExternalCSRs : 1],
+    input  logic [31:0]          ecsr_rdata_i[ExternalCSRs > 0 ? ExternalCSRs : 1],
+    output logic                 ecsr_we_o   [ExternalCSRs > 0 ? ExternalCSRs : 1],
+    output logic [31:0]          ecsr_wdata_o[ExternalCSRs > 0 ? ExternalCSRs : 1],
+
+    // Vector CSR interface (to/from vector core)
+    output logic [31:0]          vcsr_vtype_o,     // vtype CSR output
+    output logic [31:0]          vcsr_vl_o,        // vl CSR output
+    output logic [31:0]          vcsr_vlenb_o,     // vlenb CSR output (constant)
+    output logic [31:0]          vcsr_vstart_o,    // vstart CSR output
+    input  logic [31:0]          vcsr_vstart_i,    // vstart CSR input from vector core
+    input  logic                 vcsr_vstart_set_i,// vstart CSR write enable from vector core
+    output logic [1:0]           vcsr_vxrm_o,      // vxrm CSR output (2 bits effective)
+    input  logic [1:0]           vcsr_vxrm_i,      // vxrm CSR input from vector core
+    input  logic                 vcsr_vxrm_set_i,  // vxrm CSR write enable from vector core
+    output logic                 vcsr_vxsat_o,     // vxsat CSR output (1 bit effective)
+    input  logic                 vcsr_vxsat_i,     // vxsat CSR input from vector core
+    input  logic                 vcsr_vxsat_set_i, // vxsat CSR write enable from vector core
+    input  logic [31:0]          vcsr_vl_i,        // vl CSR input from vector core
+    input  logic                 vcsr_vl_set_i,    // vl CSR write enable
+    input  logic [31:0]          vcsr_vtype_i,     // vtype CSR input from vector core
+    input  logic                 vcsr_vtype_set_i, // vtype CSR write enable
 
     // interrupts
     input  logic                 irq_software_i,
@@ -234,6 +253,19 @@ module ibex_cs_registers #(
   cpu_ctrl_t   cpuctrl_q, cpuctrl_d, cpuctrl_wdata;
   logic        cpuctrl_we;
   logic        cpuctrl_err;
+
+  // Vector CSRs - all 32-bit registers with effective width preserved
+  logic [31:0] vstart_q, vstart_d;      // vstart CSR (effective width depends on VLEN)
+  logic        vstart_en;
+  logic [31:0] vxsat_q, vxsat_d;        // vxsat CSR (effective width: 1 bit)
+  logic        vxsat_en;
+  logic [31:0] vxrm_q, vxrm_d;          // vxrm CSR (effective width: 2 bits)
+  logic        vxrm_en;
+  logic [31:0] vl_q, vl_d;              // vl CSR (read-only, set by vsetvl)
+  logic        vl_en;
+  logic [31:0] vtype_q, vtype_d;        // vtype CSR (read-only, set by vsetvl)
+  logic        vtype_en;
+  logic [31:0] vlenb_q;                 // vlenb CSR (read-only constant)
 
   // CSR update logic
   logic [31:0] csr_wdata_int;
@@ -423,6 +455,15 @@ module ibex_cs_registers #(
         csr_rdata_int = '0;
       end
 
+      // Vector CSRs
+      12'h008: csr_rdata_int = vstart_q;              // vstart
+      12'h009: csr_rdata_int = {31'b0, vxsat_q[0]};   // vxsat (1 bit effective)
+      12'h00A: csr_rdata_int = {30'b0, vxrm_q[1:0]};  // vxrm (2 bits effective)
+      12'h00F: csr_rdata_int = {29'b0, vxrm_q[1:0], vxsat_q[0]};  // vcsr = {vxrm, vxsat}
+      12'hC20: csr_rdata_int = vl_q;                  // vl (read-only)
+      12'hC21: csr_rdata_int = vtype_q;               // vtype (read-only)
+      12'hC22: csr_rdata_int = vlenb_q;               // vlenb (constant)
+
       default: begin
         illegal_csr = 1'b1;
         for (int i = 0; i < ExternalCSRs; i++) begin
@@ -473,6 +514,18 @@ module ibex_cs_registers #(
     mhpmcounterh_we  = '0;
 
     cpuctrl_we       = 1'b0;
+
+    // Vector CSR write enable and data
+    vstart_en = 1'b0;
+    vstart_d  = vstart_q;
+    vxsat_en  = 1'b0;
+    vxsat_d   = vxsat_q;
+    vxrm_en   = 1'b0;
+    vxrm_d    = vxrm_q;
+    vl_en     = 1'b0;
+    vl_d      = vl_q;
+    vtype_en  = 1'b0;
+    vtype_d   = vtype_q;
 
     ecsr_we_o        = '{default: 1'b0};
     ecsr_wdata_o     = '{default: csr_wdata_int};
@@ -576,6 +629,28 @@ module ibex_cs_registers #(
 
         CSR_CPUCTRL: cpuctrl_we = 1'b1;
 
+        // Vector CSRs
+        12'h008: begin  // vstart
+          vstart_en = 1'b1;
+          vstart_d  = csr_wdata_int;
+        end
+        12'h009: begin  // vxsat (only bit 0 is writable)
+          vxsat_en = 1'b1;
+          vxsat_d  = {31'b0, csr_wdata_int[0]};
+        end
+        12'h00A: begin  // vxrm (only bits 1:0 are writable)
+          vxrm_en = 1'b1;
+          vxrm_d  = {30'b0, csr_wdata_int[1:0]};
+        end
+        12'h00F: begin  // vcsr = {vxrm, vxsat}
+          vxsat_en = 1'b1;
+          vxsat_d  = {31'b0, csr_wdata_int[0]};
+          vxrm_en  = 1'b1;
+          vxrm_d   = {30'b0, csr_wdata_int[2:1]};
+        end
+        // 12'hC20 (vl), 12'hC21 (vtype), 12'hC22 (vlenb) are read-only from CPU perspective
+        // They are written by vector core through separate interface
+
         default: begin
           for (int i = 0; i < ExternalCSRs; i++) begin
             if (csr_addr_i == ecsr_addr_i[i]) begin
@@ -660,6 +735,28 @@ module ibex_cs_registers #(
 
       default:;
     endcase
+
+    // Vector core writes to CSRs (higher priority than CPU writes for vector-specific CSRs)
+    if (vcsr_vstart_set_i) begin
+      vstart_en = 1'b1;
+      vstart_d  = vcsr_vstart_i;
+    end
+    if (vcsr_vxsat_set_i) begin
+      vxsat_en = 1'b1;
+      vxsat_d  = {31'b0, vcsr_vxsat_i};
+    end
+    if (vcsr_vxrm_set_i) begin
+      vxrm_en = 1'b1;
+      vxrm_d  = {30'b0, vcsr_vxrm_i};
+    end
+    if (vcsr_vl_set_i) begin
+      vl_en = 1'b1;
+      vl_d  = vcsr_vl_i;
+    end
+    if (vcsr_vtype_set_i) begin
+      vtype_en = 1'b1;
+      vtype_d  = vcsr_vtype_i;
+    end
   end
 
   // Update current priv level
@@ -695,6 +792,14 @@ module ibex_cs_registers #(
   assign csr_mepc_o  = mepc_q;
   assign csr_depc_o  = depc_q;
   assign csr_mtvec_o = mtvec_q;
+
+  // Vector CSR outputs to vector core
+  assign vcsr_vtype_o  = vtype_q;
+  assign vcsr_vl_o     = vl_q;
+  assign vcsr_vlenb_o  = vlenb_q;
+  assign vcsr_vstart_o = vstart_q;
+  assign vcsr_vxrm_o   = vxrm_q[1:0];
+  assign vcsr_vxsat_o  = vxsat_q[0];
 
   assign csr_mstatus_mie_o   = mstatus_q.mie;
   assign debug_single_step_o = dcsr_q.step;
@@ -928,6 +1033,83 @@ module ibex_cs_registers #(
   // -----------------
   // PMP registers - Not supported, removed
   // -----------------
+
+  //////////////////////////
+  //  Vector CSRs         //
+  //////////////////////////
+
+  // VSTART (0x008) - Vector start index
+  ibex_csr #(
+    .Width      (32),
+    .ShadowCopy (1'b0),
+    .ResetValue ('0)
+  ) u_vstart_csr (
+    .clk_i      (clk_i),
+    .rst_ni     (rst_ni),
+    .wr_data_i  (vstart_d),
+    .wr_en_i    (vstart_en),
+    .rd_data_o  (vstart_q),
+    .rd_error_o ()
+  );
+
+  // VXSAT (0x009) - Fixed-point saturation flag (1 bit effective)
+  ibex_csr #(
+    .Width      (32),
+    .ShadowCopy (1'b0),
+    .ResetValue ('0)
+  ) u_vxsat_csr (
+    .clk_i      (clk_i),
+    .rst_ni     (rst_ni),
+    .wr_data_i  (vxsat_d),
+    .wr_en_i    (vxsat_en),
+    .rd_data_o  (vxsat_q),
+    .rd_error_o ()
+  );
+
+  // VXRM (0x00A) - Fixed-point rounding mode (2 bits effective)
+  ibex_csr #(
+    .Width      (32),
+    .ShadowCopy (1'b0),
+    .ResetValue ('0)
+  ) u_vxrm_csr (
+    .clk_i      (clk_i),
+    .rst_ni     (rst_ni),
+    .wr_data_i  (vxrm_d),
+    .wr_en_i    (vxrm_en),
+    .rd_data_o  (vxrm_q),
+    .rd_error_o ()
+  );
+
+  // VL (0xC20) - Vector length (read-only, set by vector core)
+  ibex_csr #(
+    .Width      (32),
+    .ShadowCopy (1'b0),
+    .ResetValue ('0)
+  ) u_vl_csr (
+    .clk_i      (clk_i),
+    .rst_ni     (rst_ni),
+    .wr_data_i  (vl_d),
+    .wr_en_i    (vl_en),
+    .rd_data_o  (vl_q),
+    .rd_error_o ()
+  );
+
+  // VTYPE (0xC21) - Vector type (read-only, set by vector core)
+  ibex_csr #(
+    .Width      (32),
+    .ShadowCopy (1'b0),
+    .ResetValue (32'h80000000)  // vill=1 initially (invalid)
+  ) u_vtype_csr (
+    .clk_i      (clk_i),
+    .rst_ni     (rst_ni),
+    .wr_data_i  (vtype_d),
+    .wr_en_i    (vtype_en),
+    .rd_data_o  (vtype_q),
+    .rd_error_o ()
+  );
+
+  // VLENB (0xC22) - Vector register length in bytes (constant)
+  assign vlenb_q = 32'(VLEN / 8);  // VLEN in bytes
 
   //////////////////////////
   //  Performance monitor //

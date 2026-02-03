@@ -237,9 +237,8 @@ module ibex_if_stage import ibex_pkg::*; #(
     );
   end else begin : gen_prefetch_buffer
     // prefetch buffer, caches a fixed number of instructions
-    ibex_prefetch_buffer #(
-      .BranchPredictor (BranchPredictor)
-    ) prefetch_buffer_i (
+    // Simplified: no branch predictor support
+    ibex_prefetch_buffer prefetch_buffer_i (
         .clk_i               ( clk_i                      ),
         .rst_ni              ( rst_ni                     ),
 
@@ -247,8 +246,6 @@ module ibex_if_stage import ibex_pkg::*; #(
 
         .branch_i            ( branch_req                 ),
         .branch_spec_i       ( branch_spec                ),
-        .predicted_branch_i  ( predicted_branch           ),
-        .branch_mispredict_i ( nt_branch_mispredict_i     ),
         .addr_i              ( {fetch_addr_n[31:1], 1'b0} ),
 
         .ready_i             ( fetch_ready                ),

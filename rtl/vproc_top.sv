@@ -122,21 +122,13 @@ module vproc_top import vproc_pkg::*; #(
     logic [VMEM_W-1:0] vlsu_mem_result_rdata;
     logic        vlsu_mem_result_err;
 
-    // CSR register interface for Vector Unit
-    localparam int unsigned VECT_CSR_CNT = 7;
-    logic [11:0] vect_csr_addr [VECT_CSR_CNT];
-    logic [31:0] vect_csr_rdata[VECT_CSR_CNT];
-    logic        vect_csr_we   [VECT_CSR_CNT];
-    logic [31:0] vect_csr_wdata[VECT_CSR_CNT];
-    assign vect_csr_addr = '{
-        12'h008, // vstart
-        12'h009, // vxsat
-        12'h00A, // vxrm
-        12'h00F, // vcsr
-        12'hC20, // vl
-        12'hC21, // vtype
-        12'hC22  // vlenb
-    };
+    // Vector CSR interface signals (now stored in unified CSR file)
+    logic [31:0] vcsr_vtype;
+    logic [31:0] vcsr_vl;
+    logic [31:0] vcsr_vlenb;
+    logic [31:0] vcsr_vstart;
+    logic [1:0]  vcsr_vxrm;
+    logic        vcsr_vxsat;
 
 `ifdef MAIN_CORE_IBEX
 
@@ -171,7 +163,8 @@ module vproc_top import vproc_pkg::*; #(
         .DmHaltAddr             ( 32'h00000000                       ),
         .DmExceptionAddr        ( 32'h00000000                       ),
         .RV32M                  ( ibex_pkg::RV32MFast                ),
-        .ExternalCSRs           ( VECT_CSR_CNT                       ),
+        .ExternalCSRs           ( 0                                  ),  // No external CSRs, use vector CSR interface
+        .VLEN                   ( vproc_config::VREG_W               ),  // Vector register length from config
         // LOAD-FP, STORE-FP, VECTOR and CUSTOM-0 opcodes
         .CoprocOpcodes          ( 32'h00200E06                       )
     ) u_core (
@@ -217,10 +210,28 @@ module vproc_top import vproc_pkg::*; #(
         .irq_fast_i             ( 15'b0                              ),
         .irq_nm_i               ( 1'b0                               ),
 
-        .ecsr_addr_i            ( vect_csr_addr                      ),
-        .ecsr_rdata_i           ( vect_csr_rdata                     ),
-        .ecsr_we_o              ( vect_csr_we                        ),
-        .ecsr_wdata_o           ( vect_csr_wdata                     ),
+        .ecsr_addr_i            ( '{default: 12'h0}                  ),  // No external CSRs
+        .ecsr_rdata_i           ( '{default: 32'h0}                  ),
+        .ecsr_we_o              (                                    ),
+        .ecsr_wdata_o           (                                    ),
+
+        // Vector CSR interface
+        .vcsr_vtype_o           ( vcsr_vtype                         ),
+        .vcsr_vl_o              ( vcsr_vl                            ),
+        .vcsr_vlenb_o           ( vcsr_vlenb                         ),
+        .vcsr_vstart_o          ( vcsr_vstart                        ),
+        .vcsr_vstart_i          ( csr_vstart_wr                      ),
+        .vcsr_vstart_set_o      ( csr_vstart_wren                    ),
+        .vcsr_vxrm_o            ( vcsr_vxrm                          ),
+        .vcsr_vxrm_i            ( csr_vxrm_wr                        ),
+        .vcsr_vxrm_set_o        ( csr_vxrm_wren                      ),
+        .vcsr_vxsat_o           ( vcsr_vxsat                         ),
+        .vcsr_vxsat_i           ( csr_vxsat_wr                       ),
+        .vcsr_vxsat_set_o       ( csr_vxsat_wren                     ),
+        .vcsr_vl_i              ( csr_vl                             ),  // vl from vector core
+        .vcsr_vl_set_i          ( csr_vl_changed                     ),  // write when vl changes
+        .vcsr_vtype_i           ( csr_vtype                          ),  // vtype from vector core
+        .vcsr_vtype_set_i       ( csr_vtype_changed                  ),  // write when vtype changes
 
         .debug_req_i            ( 1'b0                               ),
         .crash_dump_o           (                                    ),
@@ -306,32 +317,41 @@ module vproc_top import vproc_pkg::*; #(
     ///////////////////////////////////////////////////////////////////////////
     // VECTOR CORE INTEGRATION
 
-    // Vector CSR read/write conversion
+    // Vector CSR read/write conversion (from/to vector core)
+    // CSRs are now stored in unified CSR file in ibex_cs_registers
     logic [31:0] csr_vtype;
     logic [31:0] csr_vl;
     logic [31:0] csr_vlenb;
-    logic [31:0] csr_vstart_rd;
-    logic [31:0] csr_vstart_wr;
+    logic [31:0] csr_vstart_wr;   // vstart written by vector core
     logic        csr_vstart_wren;
-    logic        csr_vxsat_rd;
-    logic        csr_vxsat_wr;
-    logic        csr_vxsat_wren;
-    logic [1:0]  csr_vxrm_rd;
-    logic [1:0]  csr_vxrm_wr;
+    logic [1:0]  csr_vxrm_wr;     // vxrm written by vector core
     logic        csr_vxrm_wren;
-    assign vect_csr_rdata[0] = csr_vstart_rd;
-    assign vect_csr_rdata[1] = {31'b0, csr_vxsat_rd};
-    assign vect_csr_rdata[2] = {30'b0, csr_vxrm_rd};
-    assign vect_csr_rdata[3] = {29'b0, csr_vxrm_rd, csr_vxsat_rd};
-    assign vect_csr_rdata[4] = csr_vl;
-    assign vect_csr_rdata[5] = csr_vtype;
-    assign vect_csr_rdata[6] = csr_vlenb;
-    assign csr_vstart_wr     = vect_csr_wdata[0];
-    assign csr_vstart_wren   = vect_csr_we[0];
-    assign csr_vxsat_wr      = vect_csr_we[1] ? vect_csr_wdata[1][0]   : vect_csr_wdata[3][0];
-    assign csr_vxsat_wren    = vect_csr_we[1] | vect_csr_we[3];
-    assign csr_vxrm_wr       = vect_csr_we[2] ? vect_csr_wdata[2][1:0] : vect_csr_wdata[3][2:1];
-    assign csr_vxrm_wren     = vect_csr_we[2] | vect_csr_we[3];
+    logic        csr_vxsat_wr;    // vxsat written by vector core
+    logic        csr_vxsat_wren;
+
+    // csr_vtype, csr_vl, csr_vlenb are driven by vproc_core outputs
+    // No assignment needed here, they are connected through port connections
+
+    // Detect changes in vproc_core CSR outputs to sync back to unified CSR
+    // vtype and vl are updated by vsetvl instructions
+    // vstart, vxrm and vxsat write signals are now directly driven by vproc_core
+    logic [31:0] csr_vtype_q, csr_vl_q;
+    always_ff @(posedge clk_i or negedge rst_ni) begin
+        if (~rst_ni) begin
+            csr_vtype_q   <= 32'h80000000;
+            csr_vl_q      <= '0;
+        end else begin
+            csr_vtype_q   <= csr_vtype;
+            csr_vl_q      <= csr_vl;
+        end
+    end
+
+    // Generate write enables when CSRs change
+    logic csr_vtype_changed, csr_vl_changed;
+    assign csr_vtype_changed  = (csr_vtype != csr_vtype_q);
+    assign csr_vl_changed     = (csr_vl != csr_vl_q);
+    // csr_vstart_wr, csr_vstart_wren, csr_vxrm_wr, csr_vxrm_wren, csr_vxsat_wr, csr_vxsat_wren 
+    // are all driven by vproc_core
 
     // Data read/write for Vector Unit
     logic                vdata_gnt;
@@ -410,18 +430,19 @@ module vproc_top import vproc_pkg::*; #(
         .pending_load_o     ( vect_pending_load  ),
         .pending_store_o    ( vect_pending_store ),
 
-        .csr_vtype_o        ( csr_vtype          ),
-        .csr_vl_o           ( csr_vl             ),
-        .csr_vlenb_o        ( csr_vlenb          ),
-        .csr_vstart_o       ( csr_vstart_rd      ),
-        .csr_vstart_i       ( csr_vstart_wr      ),
-        .csr_vstart_set_i   ( csr_vstart_wren    ),
-        .csr_vxrm_o         ( csr_vxrm_rd        ),
-        .csr_vxrm_i         ( csr_vxrm_wr        ),
-        .csr_vxrm_set_i     ( csr_vxrm_wren      ),
-        .csr_vxsat_o        ( csr_vxsat_rd       ),
-        .csr_vxsat_i        ( csr_vxsat_wr       ),
-        .csr_vxsat_set_i    ( csr_vxsat_wren     ),
+        // Vector CSR interface - all CSRs now stored in unified CSR file
+        .csr_vtype_o        ( csr_vtype          ),  // vtype output from vector core
+        .csr_vl_o           ( csr_vl             ),  // vl output from vector core
+        .csr_vlenb_o        ( csr_vlenb          ),  // vlenb constant
+        .csr_vstart_i       ( vcsr_vstart        ),  // vstart from unified CSR
+        .csr_vstart_o       ( csr_vstart_wr      ),  // vstart write value from vector core
+        .csr_vstart_set_o   ( csr_vstart_wren    ),  // vstart write enable from vector core
+        .csr_vxrm_i         ( vcsr_vxrm          ),  // vxrm from unified CSR
+        .csr_vxrm_o         ( csr_vxrm_wr        ),  // vxrm write value from vector core
+        .csr_vxrm_set_o     ( csr_vxrm_wren      ),  // vxrm write enable from vector core
+        .csr_vxsat_i        ( vcsr_vxsat         ),  // vxsat from unified CSR
+        .csr_vxsat_o        ( csr_vxsat_wr       ),  // vxsat write value from vector core
+        .csr_vxsat_set_o    ( csr_vxsat_wren     ),  // vxsat write enable from vector core
 
         .pend_vreg_wr_map_o ( pend_vreg_wr_map_o )
     );
@@ -685,5 +706,172 @@ module vproc_top import vproc_pkg::*; #(
     assign dmem_wvalid   = dmem_rvalid_i &  dmem_we;
     assign dmem_err      = dmem_err_i;
     assign dmem_rdata    = dmem_rdata_i;
+
+
+    ///////////////////////////////////////////////////////////////////////////
+    // PERFORMANCE COUNTERS
+    
+    `ifdef VPROC_PERF_COUNTERS
+    
+    // 性能计数器
+    logic [63:0] perf_total_cycles;
+    logic [63:0] perf_scalar_instrs;           // 标量指令数
+    logic [63:0] perf_vector_instrs;           // 向量指令数  
+    logic [63:0] perf_matrix_instrs;           // 矩阵指令数
+    logic [63:0] perf_vector_stalls;           // 向量指令停顿周期
+    logic [63:0] perf_vload_instrs;            // 向量load指令数
+    logic [63:0] perf_vstore_instrs;           // 向量store指令数
+    logic [63:0] perf_vmem_transactions;       // 向量内存事务数
+    logic [63:0] perf_vmem_stalls;             // 向量内存停顿周期
+    logic [63:0] perf_icache_miss;             // I-Cache miss数
+    logic [63:0] perf_dcache_miss;             // D-Cache miss数
+    logic [63:0] perf_imem_wait_cycles;        // 指令内存等待周期
+    logic [63:0] perf_dmem_wait_cycles;        // 数据内存等待周期
+    
+    // 辅助信号
+    logic is_vload, is_vstore;
+    logic vector_instr_issued;
+    logic matrix_instr_issued;
+    logic scalar_instr_retired;
+    
+    // 检测向量load/store指令 (通过opcode判断)
+    assign is_vload  = issue_valid & issue_accept & (issue_instr[6:0] == 7'b0000111);  // VLE
+    assign is_vstore = issue_valid & issue_accept & (issue_instr[6:0] == 7'b0100111);  // VSE
+    
+    // 向量指令发射
+    assign vector_instr_issued = issue_valid & issue_accept & ~cpi_is_matrix;
+    
+    // 矩阵指令发射  
+    assign matrix_instr_issued = cpi_is_matrix & mat_instr_gnt;
+    
+    // 标量指令退休 (非协处理器指令且指令有效)
+    assign scalar_instr_retired = instr_rvalid & ~cpi_instr_valid;
+    
+    always_ff @(posedge clk_i or negedge rst_ni) begin
+        if (~rst_ni) begin
+            perf_total_cycles        <= '0;
+            perf_scalar_instrs       <= '0;
+            perf_vector_instrs       <= '0;
+            perf_matrix_instrs       <= '0;
+            perf_vector_stalls       <= '0;
+            perf_vload_instrs        <= '0;
+            perf_vstore_instrs       <= '0;
+            perf_vmem_transactions   <= '0;
+            perf_vmem_stalls         <= '0;
+            perf_icache_miss         <= '0;
+            perf_dcache_miss         <= '0;
+            perf_imem_wait_cycles    <= '0;
+            perf_dmem_wait_cycles    <= '0;
+        end else begin
+            // 总周期数
+            perf_total_cycles <= perf_total_cycles + 64'd1;
+            
+            // 标量指令计数
+            if (scalar_instr_retired)
+                perf_scalar_instrs <= perf_scalar_instrs + 64'd1;
+            
+            // 向量指令计数
+            if (vector_instr_issued)
+                perf_vector_instrs <= perf_vector_instrs + 64'd1;
+            
+            // 矩阵指令计数
+            if (matrix_instr_issued)
+                perf_matrix_instrs <= perf_matrix_instrs + 64'd1;
+                
+            // 向量指令停顿 (向量核未准备好接收)
+            if (issue_valid & ~issue_ready & ~cpi_is_matrix)
+                perf_vector_stalls <= perf_vector_stalls + 64'd1;
+            
+            // 向量load/store指令
+            if (is_vload)
+                perf_vload_instrs <= perf_vload_instrs + 64'd1;
+            if (is_vstore)
+                perf_vstore_instrs <= perf_vstore_instrs + 64'd1;
+                
+            // 向量内存事务
+            if (vlsu_mem_valid & vlsu_mem_ready)
+                perf_vmem_transactions <= perf_vmem_transactions + 64'd1;
+            
+            // 向量内存停顿
+            if (vlsu_mem_valid & ~vlsu_mem_ready)
+                perf_vmem_stalls <= perf_vmem_stalls + 64'd1;
+            
+            // 指令内存等待周期 (请求发出但未响应)
+            if (instr_req & ~instr_rvalid)
+                perf_imem_wait_cycles <= perf_imem_wait_cycles + 64'd1;
+            
+            // 数据内存等待周期 (请求发出但未响应)
+            if (sdata_req & ~sdata_rvalid)
+                perf_dmem_wait_cycles <= perf_dmem_wait_cycles + 64'd1;
+        end
+    end
+    
+    // Cache miss统计
+    // 注意：由于generate block层次问题，这里使用简化的检测方法
+    // Cache miss可以通过 memory request 作为估计
+    always_ff @(posedge clk_i or negedge rst_ni) begin
+        if (~rst_ni) begin
+            perf_icache_miss <= '0;
+            perf_dcache_miss <= '0;
+        end else begin
+            // I-Cache miss估计: 指令内存请求 (简化版)
+            if (ICACHE_SZ > 0 && imem_req)
+                perf_icache_miss <= perf_icache_miss + 64'd1;
+            
+            // D-Cache miss估计: 数据内存请求 (简化版)
+            if (DCACHE_SZ > 0 && dmem_req)
+                perf_dcache_miss <= perf_dcache_miss + 64'd1;
+        end
+    end
+    
+    // 打印性能统计
+    final begin
+        $display("========================================");
+        $display("=== PERFORMANCE ANALYSIS ===");
+        $display("========================================");
+        $display("Total Cycles:          %0d", perf_total_cycles);
+        $display("");
+        
+        $display("--- Instruction Breakdown ---");
+        $display("Scalar Instructions:   %0d (%.2f%%)", perf_scalar_instrs,
+                 100.0 * perf_scalar_instrs / perf_total_cycles);
+        $display("Vector Instructions:   %0d (%.2f%%)", perf_vector_instrs,
+                 100.0 * perf_vector_instrs / perf_total_cycles);
+        $display("Matrix Instructions:   %0d (%.2f%%)", perf_matrix_instrs,
+                 100.0 * perf_matrix_instrs / perf_total_cycles);
+        $display("  - Vector Loads:      %0d", perf_vload_instrs);
+        $display("  - Vector Stores:     %0d", perf_vstore_instrs);
+        $display("");
+        
+        $display("--- Stall Analysis ---");
+        $display("Vector Stall Cycles:   %0d (%.2f%%)", perf_vector_stalls,
+                 100.0 * perf_vector_stalls / perf_total_cycles);
+        $display("VMem Stall Cycles:     %0d (%.2f%%)", perf_vmem_stalls,
+                 100.0 * perf_vmem_stalls / perf_total_cycles);
+        $display("IMem Wait Cycles:      %0d (%.2f%%)", perf_imem_wait_cycles,
+                 100.0 * perf_imem_wait_cycles / perf_total_cycles);
+        $display("DMem Wait Cycles:      %0d (%.2f%%)", perf_dmem_wait_cycles,
+                 100.0 * perf_dmem_wait_cycles / perf_total_cycles);
+        $display("");
+        
+        $display("--- Memory Subsystem ---");
+        $display("VMem Transactions:     %0d", perf_vmem_transactions);
+        if (ICACHE_SZ > 0)
+            $display("I-Cache Misses:        %0d", perf_icache_miss);
+        if (DCACHE_SZ > 0)
+            $display("D-Cache Misses:        %0d", perf_dcache_miss);
+        $display("");
+        
+        $display("--- Performance Metrics ---");
+        if (perf_total_cycles > 0) begin
+            $display("Overall IPC:           %.3f", 
+                     1.0 * (perf_scalar_instrs + perf_vector_instrs + perf_matrix_instrs) / perf_total_cycles);
+            $display("Vector IPC:            %.3f",
+                     1.0 * perf_vector_instrs / perf_total_cycles);
+        end
+        $display("========================================");
+    end
+    
+    `endif  // VPROC_PERF_COUNTERS
 
 endmodule

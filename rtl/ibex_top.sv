@@ -28,7 +28,8 @@ module ibex_top #(
     parameter bit                 SecureIbex       = 1'b0,
     parameter int unsigned        DmHaltAddr       = 32'h1A110800,
     parameter int unsigned        DmExceptionAddr  = 32'h1A110808,
-    parameter bit [31:0]          CoprocOpcodes    = '0
+    parameter bit [31:0]          CoprocOpcodes    = '0,
+    parameter int unsigned        VLEN             = 128  // Vector register length in bits
 ) (
     // Clock and Reset
     input  logic                         clk_i,
@@ -77,11 +78,29 @@ module ibex_top #(
     input  logic [14:0]                  irq_fast_i,
     input  logic                         irq_nm_i,       // non-maskeable interrupt
 
-    // External CSR
-    input  logic [11:0]                  ecsr_addr_i [ExternalCSRs],
-    input  logic [31:0]                  ecsr_rdata_i[ExternalCSRs],
-    output logic                         ecsr_we_o   [ExternalCSRs],
-    output logic [31:0]                  ecsr_wdata_o[ExternalCSRs],
+    // External CSR (array size must be at least 1 for Verilator)
+    input  logic [11:0]                  ecsr_addr_i [ExternalCSRs > 0 ? ExternalCSRs : 1],
+    input  logic [31:0]                  ecsr_rdata_i[ExternalCSRs > 0 ? ExternalCSRs : 1],
+    output logic                         ecsr_we_o   [ExternalCSRs > 0 ? ExternalCSRs : 1],
+    output logic [31:0]                  ecsr_wdata_o[ExternalCSRs > 0 ? ExternalCSRs : 1],
+
+    // Vector CSR interface (to/from vector core)
+    output logic [31:0]                  vcsr_vtype_o,
+    output logic [31:0]                  vcsr_vl_o,
+    output logic [31:0]                  vcsr_vlenb_o,
+    output logic [31:0]                  vcsr_vstart_o,
+    input  logic [31:0]                  vcsr_vstart_i,
+    output logic                         vcsr_vstart_set_o,
+    output logic [1:0]                   vcsr_vxrm_o,
+    input  logic [1:0]                   vcsr_vxrm_i,
+    output logic                         vcsr_vxrm_set_o,
+    output logic                         vcsr_vxsat_o,
+    input  logic                         vcsr_vxsat_i,
+    output logic                         vcsr_vxsat_set_o,
+    input  logic [31:0]                  vcsr_vl_i,
+    input  logic                         vcsr_vl_set_i,
+    input  logic [31:0]                  vcsr_vtype_i,
+    input  logic                         vcsr_vtype_set_i,
 
     // Debug Interface
     input  logic                         debug_req_i,
@@ -212,6 +231,7 @@ module ibex_top #(
     .ICacheECC         ( ICacheECC         ),
     .BusSizeECC        ( BusSizeECC        ),
     .TagSizeECC        ( TagSizeECC        ),
+    .VLEN              ( VLEN              ),
     .LineSizeECC       ( LineSizeECC       ),
     .BranchPredictor   ( BranchPredictor   ),
     .DbgTriggerEn      ( DbgTriggerEn      ),
@@ -289,6 +309,23 @@ module ibex_top #(
     .ecsr_rdata_i,
     .ecsr_we_o,
     .ecsr_wdata_o,
+
+    .vcsr_vtype_o,
+    .vcsr_vl_o,
+    .vcsr_vlenb_o,
+    .vcsr_vstart_o,
+    .vcsr_vstart_i,
+    .vcsr_vstart_set_o,
+    .vcsr_vxrm_o,
+      .vcsr_vxrm_i,
+      .vcsr_vxrm_set_o,
+      .vcsr_vxsat_o,
+      .vcsr_vxsat_i,
+      .vcsr_vxsat_set_o,
+    .vcsr_vl_i,
+    .vcsr_vl_set_i,
+    .vcsr_vtype_i,
+    .vcsr_vtype_set_i,
 
     .debug_req_i,
     .crash_dump_o,

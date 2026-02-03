@@ -65,7 +65,7 @@ verilator-version-check:
 
 verilator: verilator-version-check $(PROJ_DIR)/obj_dir/Vvproc_top.mk
 	cd $(PROJ_DIR)/obj_dir && echo "include $(SIM_DIR)/verilated_pch_fix.mk" >> Vvproc_top.mk; \
-	make -C $(PROJ_DIR)/obj_dir -f Vvproc_top.mk Vvproc_top;                  \
+	make -C $(PROJ_DIR)/obj_dir -f Vvproc_top.mk -j$$(nproc) Vvproc_top;                  \
 	$(PROJ_DIR)/obj_dir/Vvproc_top $(abspath $(PROG_PATHS)) $(MEM_W)          \
 	    $(MEM_SZ) $(MEM_LATENCY) $$(($(VREG_W) * 2)) $(abspath $(TRACE_FILE)) \
 	    $(abspath $(TRACE_VCD)) $(abspath $(TRACE_FST))
@@ -88,6 +88,9 @@ $(PROJ_DIR)/obj_dir/Vvproc_top.mk: verilator-version-check $(VPROC_CONFIG_PKG) $
 	cflags="$${cflags} -CFLAGS -I/usr/local/include/vltstd";                  \
 	if [ -n "$(ENABLE_SVA)" ] && [ "$(ENABLE_SVA)" != "0" ]; then             \
 	    options="$$options --assert -DVPROC_SVA";                             \
+	fi;                                                                       \
+	if [ -n "$(ENABLE_PERF_COUNTERS)" ] && [ "$(ENABLE_PERF_COUNTERS)" != "0" ]; then \
+	    options="$$options -DVPROC_PERF_COUNTERS";                            \
 	fi;                                                                       \
 	core="";                                                                  \
 	inc="";                                                                   \

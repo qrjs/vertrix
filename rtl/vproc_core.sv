@@ -96,15 +96,15 @@ module vproc_core import vproc_pkg::*; #(
         output logic [31:0]              csr_vtype_o,
         output logic [31:0]              csr_vl_o,
         output logic [31:0]              csr_vlenb_o,
-        output logic [31:0]              csr_vstart_o,
         input  logic [31:0]              csr_vstart_i,
-        input  logic                     csr_vstart_set_i,
-        output logic [1:0]               csr_vxrm_o,
+        output logic [31:0]              csr_vstart_o,
+        output logic                     csr_vstart_set_o,
         input  logic [1:0]               csr_vxrm_i,
-        input  logic                     csr_vxrm_set_i,
-        output logic                     csr_vxsat_o,
+        output logic [1:0]               csr_vxrm_o,
+        output logic                     csr_vxrm_set_o,
         input  logic                     csr_vxsat_i,
-        input  logic                     csr_vxsat_set_i,
+        output logic                     csr_vxsat_o,
+        output logic                     csr_vxsat_set_o,
 
         output logic [31:0]              pend_vreg_wr_map_o
     );
@@ -232,6 +232,8 @@ module vproc_core import vproc_pkg::*; #(
 
     ///////////////////////////////////////////////////////////////////////////
     // CONFIGURATION STATE AND CSR READ AND WRITES
+    // Note: CSRs are now stored in unified CSR file (ibex_cs_registers),
+    //       but we keep internal copies for configuration state
 
     cfg_vsew             vsew_q,     vsew_d;     // VSEW (single element width)
     cfg_lmul             lmul_q,     lmul_d;     // LMUL
@@ -239,9 +241,10 @@ module vproc_core import vproc_pkg::*; #(
     logic                vl_0_q,     vl_0_d;     // set if VL == 0
     logic [CFG_VL_W-1:0] vl_q,       vl_d;       // VL * (VSEW / 8) - 1
     logic [CFG_VL_W  :0] vl_csr_q,   vl_csr_d;   // VL (intentionally CFG_VL_W+1 wide)
-    logic [CFG_VL_W-1:0] vstart_q,   vstart_d;   // vector start index
-    cfg_vxrm             vxrm_q,     vxrm_d;     // fixed-point rounding mode
-    logic                vxsat_q,    vxsat_d;    // fixed-point saturation flag
+    // vstart, vxrm and vxsat are now only stored in external unified CSR, not internally
+    logic [CFG_VL_W-1:0] vstart_q;               // vector start index (from external CSR, combinational)
+    cfg_vxrm             vxrm_q;                 // fixed-point rounding mode (from external CSR, combinational)
+    logic                vxsat_q;                // fixed-point saturation flag (from external CSR, combinational)
     always_ff @(posedge clk_i or negedge async_rst_n) begin : vproc_cfg_reg
         if (~async_rst_n) begin
             vsew_q     <= VSEW_INVALID;
@@ -250,9 +253,6 @@ module vproc_core import vproc_pkg::*; #(
             vl_0_q     <= 1'b0;
             vl_q       <= '0;
             vl_csr_q   <= '0;
-            vstart_q   <= '0;
-            vxrm_q     <= VXRM_RNU;
-            vxsat_q    <= 1'b0;
         end
         else if (~sync_rst_n) begin
             vsew_q     <= VSEW_INVALID;
@@ -261,9 +261,6 @@ module vproc_core import vproc_pkg::*; #(
             vl_0_q     <= 1'b0;
             vl_q       <= '0;
             vl_csr_q   <= '0;
-            vstart_q   <= '0;
-            vxrm_q     <= VXRM_RNU;
-            vxsat_q    <= 1'b0;
         end else begin
             vsew_q     <= vsew_d;
             lmul_q     <= lmul_d;
@@ -271,21 +268,31 @@ module vproc_core import vproc_pkg::*; #(
             vl_0_q     <= vl_0_d;
             vl_q       <= vl_d;
             vl_csr_q   <= vl_csr_d;
-            vstart_q   <= vstart_d;
-            vxrm_q     <= vxrm_d;
-            vxsat_q    <= vxsat_d;
         end
     end
+    
+    // vstart, vxrm and vxsat are read directly from external unified CSR
+    assign vstart_q = csr_vstart_i[CFG_VL_W-1:0];
+    assign vxrm_q   = cfg_vxrm'(csr_vxrm_i);
+    assign vxsat_q  = csr_vxsat_i;
     logic cfg_valid;
     assign cfg_valid = vsew_q != VSEW_INVALID;
 
-    // CSR reads
+    // CSR reads - output to unified CSR file (all 32-bit)
+    // vtype: 32-bit register with fields packed
     assign csr_vtype_o  = cfg_valid ? {24'b0, agnostic_q, 1'b0, vsew_q, lmul_q} : 32'h80000000;
+    // vl: 32-bit register, effective width determined by CFG_VL_W
     assign csr_vl_o     = cfg_valid ? {{(32-CFG_VL_W-1){1'b0}}, vl_csr_q} : '0;
-    assign csr_vlenb_o  = VREG_W / 8;
-    assign csr_vstart_o = '0;
-    assign csr_vxrm_o   = vxrm_q;
-    assign csr_vxsat_o  = vxsat_q;
+    // vlenb: 32-bit constant
+    assign csr_vlenb_o  = 32'(VREG_W / 8);
+    // vstart, vxrm and vxsat write signals to external CSR
+    // These are driven by CSR write instructions in the combinational logic
+    assign csr_vstart_o    = {{(32-CFG_VL_W){1'b0}}, vstart_next};
+    assign csr_vstart_set_o = vstart_wr;
+    assign csr_vxrm_o       = vxrm_next;
+    assign csr_vxrm_set_o   = vxrm_wr;
+    assign csr_vxsat_o      = vxsat_next;
+    assign csr_vxsat_set_o  = vxsat_wr;
 
 
     ///////////////////////////////////////////////////////////////////////////
@@ -535,18 +542,23 @@ module vproc_core import vproc_pkg::*; #(
     end
 
     // CSR read/write logic
-    logic [1:0] vxrm_next;
-    assign vxrm_d = cfg_vxrm'(vxrm_next);
+    logic [CFG_VL_W-1:0] vstart_next;
+    logic [1:0]          vxrm_next;
+    logic                vxsat_next;
+    logic                vstart_wr, vxrm_wr, vxsat_wr;  // Write enable signals for external CSR
     always_comb begin
-        vsew_d     = vsew_q;
-        lmul_d     = lmul_q;
-        agnostic_d = agnostic_q;
-        vl_0_d     = vl_0_q;
-        vl_d       = vl_q;
-        vl_csr_d   = vl_csr_q;
-        vstart_d   = vstart_q;
-        vxrm_next  = vxrm_q;
-        vxsat_d    = vxsat_q;
+        vsew_d      = vsew_q;
+        lmul_d      = lmul_q;
+        agnostic_d  = agnostic_q;
+        vl_0_d      = vl_0_q;
+        vl_d        = vl_q;
+        vl_csr_d    = vl_csr_q;
+        vstart_next = vstart_q;
+        vxrm_next   = vxrm_q;
+        vxsat_next  = vxsat_q;
+        vstart_wr   = 1'b0;
+        vxrm_wr     = 1'b0;
+        vxsat_wr    = 1'b0;
 
         result_csr_delayed = DONT_CARE_ZERO ? '0 : 'x;
         result_csr_data    = DONT_CARE_ZERO ? '0 : 'x;
@@ -574,18 +586,57 @@ module vproc_core import vproc_pkg::*; #(
             endcase
             // update read/write CSR
             unique case (dec_data_q.mode.cfg.csr_op)
-                CFG_VSTART_WRITE: vstart_d              =  dec_data_q.rs1.r.xval[CFG_VL_W-1:0];
-                CFG_VSTART_SET:   vstart_d             |=  dec_data_q.rs1.r.xval[CFG_VL_W-1:0];
-                CFG_VSTART_CLEAR: vstart_d             &= ~dec_data_q.rs1.r.xval[CFG_VL_W-1:0];
-                CFG_VXSAT_WRITE:  vxsat_d               =  dec_data_q.rs1.r.xval[0         :0];
-                CFG_VXSAT_SET:    vxsat_d              |=  dec_data_q.rs1.r.xval[0         :0];
-                CFG_VXSAT_CLEAR:  vxsat_d              &= ~dec_data_q.rs1.r.xval[0         :0];
-                CFG_VXRM_WRITE:   vxrm_next             =  dec_data_q.rs1.r.xval[1         :0];
-                CFG_VXRM_SET:     vxrm_next            |=  dec_data_q.rs1.r.xval[1         :0];
-                CFG_VXRM_CLEAR:   vxrm_next            &= ~dec_data_q.rs1.r.xval[1         :0];
-                CFG_VCSR_WRITE:   {vxrm_next, vxsat_d}  =  dec_data_q.rs1.r.xval[2         :0];
-                CFG_VCSR_SET:     {vxrm_next, vxsat_d} |=  dec_data_q.rs1.r.xval[2         :0];
-                CFG_VCSR_CLEAR:   {vxrm_next, vxsat_d} &= ~dec_data_q.rs1.r.xval[2         :0];
+                CFG_VSTART_WRITE: begin
+                    vstart_next =  dec_data_q.rs1.r.xval[CFG_VL_W-1:0];
+                    vstart_wr   = 1'b1;
+                end
+                CFG_VSTART_SET: begin
+                    vstart_next = vstart_q |  dec_data_q.rs1.r.xval[CFG_VL_W-1:0];
+                    vstart_wr   = 1'b1;
+                end
+                CFG_VSTART_CLEAR: begin
+                    vstart_next = vstart_q & ~dec_data_q.rs1.r.xval[CFG_VL_W-1:0];
+                    vstart_wr   = 1'b1;
+                end
+                CFG_VXSAT_WRITE: begin
+                    vxsat_next =  dec_data_q.rs1.r.xval[0:0];
+                    vxsat_wr   = 1'b1;
+                end
+                CFG_VXSAT_SET: begin
+                    vxsat_next = vxsat_q |  dec_data_q.rs1.r.xval[0:0];
+                    vxsat_wr   = 1'b1;
+                end
+                CFG_VXSAT_CLEAR: begin
+                    vxsat_next = vxsat_q & ~dec_data_q.rs1.r.xval[0:0];
+                    vxsat_wr   = 1'b1;
+                end
+                CFG_VXRM_WRITE: begin
+                    vxrm_next =  dec_data_q.rs1.r.xval[1:0];
+                    vxrm_wr   = 1'b1;
+                end
+                CFG_VXRM_SET: begin
+                    vxrm_next = vxrm_q |  dec_data_q.rs1.r.xval[1:0];
+                    vxrm_wr   = 1'b1;
+                end
+                CFG_VXRM_CLEAR: begin
+                    vxrm_next = vxrm_q & ~dec_data_q.rs1.r.xval[1:0];
+                    vxrm_wr   = 1'b1;
+                end
+                CFG_VCSR_WRITE: begin
+                    {vxrm_next, vxsat_next} =  dec_data_q.rs1.r.xval[2:0];
+                    vxrm_wr  = 1'b1;
+                    vxsat_wr = 1'b1;
+                end
+                CFG_VCSR_SET: begin
+                    {vxrm_next, vxsat_next} = {vxrm_q, vxsat_q} |  dec_data_q.rs1.r.xval[2:0];
+                    vxrm_wr  = 1'b1;
+                    vxsat_wr = 1'b1;
+                end
+                CFG_VCSR_CLEAR: begin
+                    {vxrm_next, vxsat_next} = {vxrm_q, vxsat_q} & ~dec_data_q.rs1.r.xval[2:0];
+                    vxrm_wr  = 1'b1;
+                    vxsat_wr = 1'b1;
+                end
                 default: ;
             endcase
         end
