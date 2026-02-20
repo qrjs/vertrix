@@ -39,11 +39,15 @@ bss_clear_loop:
 
 bss_clear_end:
 
-    # jump to main (argc = 0, argv = 0, returns to _start)
+    # jump to main (argc = 0, argv = 0)
     li a0, 0
     li a1, 0
-    la ra, _start
-    j main
+    call main
+
+    # main returned, halt
+_halt:
+    wfi
+    j _halt
 
 
 # default exception handler (infinite loop)

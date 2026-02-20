@@ -137,7 +137,7 @@ int main(int argc, char **argv) {
                     while (*ptr == ' ')
                         ptr++;
                 }
-                while (*ptr != '\n' && *ptr != 0) {
+                while (*ptr != '\n' && *ptr != '\r' && *ptr != 0) {
                     int data = strtol(ptr, &ptr, 16);
                     int i;
                     for (i = 0; i < 4; i++)
@@ -234,19 +234,15 @@ int main(int argc, char **argv) {
                     }
                 }
                 else if (top->dmem_req_o) {
-                    // 内存映射寄存器（UART等）
-                    switch (dmem_addr) {
-                        case 0xFF000000u: // UART data register
-                            dmem_valid         = true;
-                            dmem_rdata_queue[0] = -1;   // always reads as -1, i.e. no data received
+                    if ((dmem_addr & 0xFFFF0000u) == 0xFF000000u) {
+                        dmem_valid = true;
+                        dmem_rdata_queue[0] = 0;
+                        if (dmem_addr == 0xFF000000u) {
+                            dmem_rdata_queue[0] = -1;
                             if (top->dmem_we_o) {
                                 putc(top->dmem_wdata_o & 0xFF, stdout);
                             }
-                            break;
-                        case 0xFF000004u: // UART status register
-                            dmem_valid         = true;
-                            dmem_rdata_queue[0] = 0;    // always ready to transmit
-                            break;
+                        }
                     }
                 }
                 dmem_rvalid_queue[0] = top->dmem_req_o;
@@ -286,7 +282,7 @@ int main(int argc, char **argv) {
                 // log data
                 log_cycle(top, tfp, fcsv);
 
-                if (end_cnt > 0 || (top->dmem_req_o == 1 && top->dmem_addr_o == 0)) {
+                if (end_cnt > 0 || (top->dmem_req_o == 1 && top->dmem_addr_o == 0) || top->core_sleep_o) {
                     end_cnt++;
                 }
                 abort_cnt = (top->imem_req_o == imem_req_o_tmp && top->dmem_req_o == dmem_req_o_tmp) ? abort_cnt + 1 : 0;

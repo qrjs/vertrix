@@ -26,6 +26,9 @@ module vproc_elem #(
         output logic                   pipe_out_valid_o,
         input  logic                   pipe_out_ready_i,
         output CTRL_T                  pipe_out_ctrl_o,
+        `ifdef RISCV_ZVE32F
+        output logic                   pipe_out_freg,
+        `endif
         output logic                   pipe_out_xreg_valid_o,
         output logic [31           :0] pipe_out_xreg_data_o,
         output logic [4            :0] pipe_out_xreg_addr_o,
@@ -135,6 +138,9 @@ module vproc_elem #(
     assign pipe_out_xreg_valid_o = state_res_q.mode.elem.xreg & ((state_res_q.mode.elem.op == ELEM_XMV) ? state_res_q.first_cycle : state_res_q.last_cycle);
     assign pipe_out_xreg_data_o  = result_q;
     assign pipe_out_xreg_addr_o  = state_res_q.res_vaddr;
+    `ifdef RISCV_ZVE32F
+    assign pipe_out_freg = pipe_out_xreg_valid_o & state_res_q.mode.elem.freg;
+    `endif
 
     assign pipe_out_valid_o     = state_res_valid_q;
     assign pipe_out_ctrl_o      = state_res_q;

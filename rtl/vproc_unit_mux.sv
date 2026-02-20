@@ -5,8 +5,8 @@
 
 module vproc_unit_mux import vproc_pkg::*; #(
         parameter bit [UNIT_CNT-1:0]                 UNITS           = '0,
-        parameter int unsigned                       INSTR_ID_W      = 3,
-        parameter int unsigned                       INSTR_ID_CNT    = 8,
+        parameter int unsigned                       XIF_ID_W        = 3,
+        parameter int unsigned                       XIF_ID_CNT      = 8,
         parameter int unsigned                       VREG_W          = 128,
         parameter int unsigned                       OP_CNT          = 2,
         parameter int unsigned                       MAX_OP_W        = 32,
@@ -32,7 +32,7 @@ module vproc_unit_mux import vproc_pkg::*; #(
 
         output logic                                 pipe_out_valid_o,
         input  logic                                 pipe_out_ready_i,
-        output logic    [INSTR_ID_W            -1:0] pipe_out_instr_id_o,
+        output logic    [XIF_ID_W              -1:0] pipe_out_instr_id_o,
         output cfg_vsew                              pipe_out_eew_o,
         output logic    [4:0]                        pipe_out_vaddr_o,
         output logic    [RES_CNT-1:0]                pipe_out_res_store_o,
@@ -49,33 +49,36 @@ module vproc_unit_mux import vproc_pkg::*; #(
 
         input  logic    [31:0]                       vreg_pend_rd_i,
 
-        input  instr_state [INSTR_ID_CNT       -1:0] instr_state_i,
+        input  instr_state [XIF_ID_CNT         -1:0] instr_state_i,
 
         output logic                                 vlsu_mem_valid_o,
         input  logic                                 vlsu_mem_ready_i,
-        output logic    [INSTR_ID_W            -1:0] vlsu_mem_id_o,
-        output logic    [31:0]                       vlsu_mem_addr_o,
+        output logic [XIF_ID_W-1:0]                  vlsu_mem_id_o,
+        output logic [31:0]                          vlsu_mem_addr_o,
         output logic                                 vlsu_mem_we_o,
-        output logic    [MAX_OP_W/8           -1:0] vlsu_mem_be_o,
-        output logic    [MAX_OP_W             -1:0] vlsu_mem_wdata_o,
+        output logic [MAX_OP_W/8-1:0]                vlsu_mem_be_o,
+        output logic [MAX_OP_W-1:0]                  vlsu_mem_wdata_o,
         output logic                                 vlsu_mem_last_o,
         output logic                                 vlsu_mem_spec_o,
         input  logic                                 vlsu_mem_resp_exc_i,
-        input  logic    [5:0]                        vlsu_mem_resp_exccode_i,
+        input  logic [5:0]                           vlsu_mem_resp_exccode_i,
         input  logic                                 vlsu_mem_result_valid_i,
-        input  logic    [INSTR_ID_W            -1:0] vlsu_mem_result_id_i,
-        input  logic    [MAX_OP_W             -1:0] vlsu_mem_result_rdata_i,
+        input  logic [XIF_ID_W-1:0]                  vlsu_mem_result_id_i,
+        input  logic [MAX_OP_W-1:0]                  vlsu_mem_result_rdata_i,
         input  logic                                 vlsu_mem_result_err_i,
 
         output logic                                 trans_complete_valid_o,
         input  logic                                 trans_complete_ready_i,
-        output logic    [INSTR_ID_W            -1:0] trans_complete_id_o,
+        output logic    [XIF_ID_W              -1:0] trans_complete_id_o,
         output logic                                 trans_complete_exc_o,
         output logic    [5:0]                        trans_complete_exccode_o,
 
+        `ifdef RISCV_ZVE32F
+        output logic                                 freg_res,
+        `endif 
         output logic                                 xreg_valid_o,
         input  logic                                 xreg_ready_i,
-        output logic    [INSTR_ID_W            -1:0] xreg_id_o,
+        output logic    [XIF_ID_W              -1:0] xreg_id_o,
         output logic    [4:0]                        xreg_addr_o,
         output logic    [31:0]                       xreg_data_o
     );
@@ -98,7 +101,7 @@ module vproc_unit_mux import vproc_pkg::*; #(
 
     logic      [UNIT_CNT-1:0]                             unit_out_valid;
     logic      [UNIT_CNT-1:0]                             unit_out_ready;
-    logic      [UNIT_CNT-1:0][INSTR_ID_W            -1:0] unit_out_instr_id;
+    logic      [UNIT_CNT-1:0][XIF_ID_W              -1:0] unit_out_instr_id;
     cfg_vsew   [UNIT_CNT-1:0]                             unit_out_eew;
     logic      [UNIT_CNT-1:0][4:0]                        unit_out_vaddr;
     logic      [UNIT_CNT-1:0][RES_CNT-1:0]                unit_out_res_store;
@@ -118,36 +121,21 @@ module vproc_unit_mux import vproc_pkg::*; #(
                 logic                pending_store;
                 logic                trans_complete_valid;
                 logic                trans_complete_ready;
-                logic [INSTR_ID_W-1:0] trans_complete_id;
+                logic [XIF_ID_W-1:0] trans_complete_id;
                 logic                trans_complete_exc;
                 logic [5:0]          trans_complete_exccode;
-                logic                unit_vlsu_mem_valid;
-                logic                unit_vlsu_mem_ready;
-                logic [INSTR_ID_W-1:0] unit_vlsu_mem_id;
-                logic [31:0]         unit_vlsu_mem_addr;
-                logic                unit_vlsu_mem_we;
-                logic [MAX_OP_W/8-1:0] unit_vlsu_mem_be;
-                logic [MAX_OP_W-1:0]   unit_vlsu_mem_wdata;
-                logic                unit_vlsu_mem_last;
-                logic                unit_vlsu_mem_spec;
-                logic                unit_vlsu_mem_resp_exc;
-                logic [5:0]          unit_vlsu_mem_resp_exccode;
-                logic                unit_vlsu_mem_result_valid;
-                logic [INSTR_ID_W-1:0] unit_vlsu_mem_result_id;
-                logic [MAX_OP_W-1:0] unit_vlsu_mem_result_rdata;
-                logic                unit_vlsu_mem_result_err;
 
                 // ELEM-related signals (for XREG writeback)
                 logic                xreg_valid;
                 logic                xreg_ready;
-                logic [INSTR_ID_W-1:0] xreg_id;
+                logic [XIF_ID_W-1:0] xreg_id;
                 logic [4:0]          xreg_addr;
                 logic [31:0]         xreg_data;
 
                 vproc_unit_wrapper #(
                     .UNIT                      ( op_unit'(i)                ),
-                    .INSTR_ID_W                ( INSTR_ID_W                 ),
-                    .INSTR_ID_CNT              ( INSTR_ID_CNT               ),
+                    .XIF_ID_W                  ( XIF_ID_W                   ),
+                    .XIF_ID_CNT                ( XIF_ID_CNT                 ),
                     .VREG_W                    ( VREG_W                     ),
                     .OP_CNT                    ( OP_CNT                     ),
                     .MAX_OP_W                  ( MAX_OP_W                   ),
@@ -185,26 +173,29 @@ module vproc_unit_mux import vproc_pkg::*; #(
                     .pending_store_o           ( pending_store              ),
                     .vreg_pend_rd_i            ( vreg_pend_rd_i             ),
                     .instr_state_i             ( instr_state_i              ),
-                    .vlsu_mem_valid_o          ( unit_vlsu_mem_valid         ),
-                    .vlsu_mem_ready_i          ( unit_vlsu_mem_ready         ),
-                    .vlsu_mem_id_o             ( unit_vlsu_mem_id            ),
-                    .vlsu_mem_addr_o           ( unit_vlsu_mem_addr          ),
-                    .vlsu_mem_we_o             ( unit_vlsu_mem_we            ),
-                    .vlsu_mem_be_o             ( unit_vlsu_mem_be            ),
-                    .vlsu_mem_wdata_o          ( unit_vlsu_mem_wdata         ),
-                    .vlsu_mem_last_o           ( unit_vlsu_mem_last          ),
-                    .vlsu_mem_spec_o           ( unit_vlsu_mem_spec          ),
-                    .vlsu_mem_resp_exc_i       ( unit_vlsu_mem_resp_exc      ),
-                    .vlsu_mem_resp_exccode_i   ( unit_vlsu_mem_resp_exccode  ),
-                    .vlsu_mem_result_valid_i   ( unit_vlsu_mem_result_valid  ),
-                    .vlsu_mem_result_id_i      ( unit_vlsu_mem_result_id     ),
-                    .vlsu_mem_result_rdata_i   ( unit_vlsu_mem_result_rdata  ),
-                    .vlsu_mem_result_err_i     ( unit_vlsu_mem_result_err    ),
+                    .vlsu_mem_valid_o          ( vlsu_mem_valid_o           ),
+                    .vlsu_mem_ready_i          ( vlsu_mem_ready_i           ),
+                    .vlsu_mem_id_o             ( vlsu_mem_id_o              ),
+                    .vlsu_mem_addr_o           ( vlsu_mem_addr_o            ),
+                    .vlsu_mem_we_o             ( vlsu_mem_we_o              ),
+                    .vlsu_mem_be_o             ( vlsu_mem_be_o              ),
+                    .vlsu_mem_wdata_o          ( vlsu_mem_wdata_o           ),
+                    .vlsu_mem_last_o           ( vlsu_mem_last_o            ),
+                    .vlsu_mem_spec_o           ( vlsu_mem_spec_o            ),
+                    .vlsu_mem_resp_exc_i       ( vlsu_mem_resp_exc_i        ),
+                    .vlsu_mem_resp_exccode_i   ( vlsu_mem_resp_exccode_i    ),
+                    .vlsu_mem_result_valid_i   ( vlsu_mem_result_valid_i    ),
+                    .vlsu_mem_result_id_i      ( vlsu_mem_result_id_i       ),
+                    .vlsu_mem_result_rdata_i   ( vlsu_mem_result_rdata_i    ),
+                    .vlsu_mem_result_err_i     ( vlsu_mem_result_err_i      ),
                     .trans_complete_valid_o    ( trans_complete_valid       ),
                     .trans_complete_ready_i    ( trans_complete_ready       ),
                     .trans_complete_id_o       ( trans_complete_id          ),
                     .trans_complete_exc_o      ( trans_complete_exc         ),
                     .trans_complete_exccode_o  ( trans_complete_exccode     ),
+                    `ifdef RISCV_ZVE32F
+                    .freg_res                  ( freg_res                   ),
+                     `endif 
                     .xreg_valid_o              ( xreg_valid                 ),
                     .xreg_ready_i              ( xreg_ready                 ),
                     .xreg_id_o                 ( xreg_id                    ),
@@ -215,21 +206,6 @@ module vproc_unit_mux import vproc_pkg::*; #(
                 if (op_unit'(i) == UNIT_LSU) begin
                     assign pending_load_o            = pending_load;
                     assign pending_store_o           = pending_store;
-                    assign vlsu_mem_valid_o          = unit_vlsu_mem_valid;
-                    assign unit_vlsu_mem_ready       = vlsu_mem_ready_i;
-                    assign vlsu_mem_id_o             = unit_vlsu_mem_id;
-                    assign vlsu_mem_addr_o           = unit_vlsu_mem_addr;
-                    assign vlsu_mem_we_o             = unit_vlsu_mem_we;
-                    assign vlsu_mem_be_o             = unit_vlsu_mem_be;
-                    assign vlsu_mem_wdata_o          = unit_vlsu_mem_wdata;
-                    assign vlsu_mem_last_o           = unit_vlsu_mem_last;
-                    assign vlsu_mem_spec_o           = unit_vlsu_mem_spec;
-                    assign unit_vlsu_mem_resp_exc    = vlsu_mem_resp_exc_i;
-                    assign unit_vlsu_mem_resp_exccode = vlsu_mem_resp_exccode_i;
-                    assign unit_vlsu_mem_result_valid = vlsu_mem_result_valid_i;
-                    assign unit_vlsu_mem_result_id   = vlsu_mem_result_id_i;
-                    assign unit_vlsu_mem_result_rdata = vlsu_mem_result_rdata_i;
-                    assign unit_vlsu_mem_result_err  = vlsu_mem_result_err_i;
                     assign trans_complete_valid_o    = trans_complete_valid;
                     assign trans_complete_ready      = trans_complete_ready_i;
                     assign trans_complete_id_o       = trans_complete_id;

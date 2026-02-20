@@ -30,4 +30,4 @@ spill_cache:
     addi            a0, a0, 16
     ble             a0, a1, .spill_cache_1
 
-    jr              x0
+    ret

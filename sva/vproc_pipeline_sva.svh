@@ -34,7 +34,8 @@
         @(posedge clk_i)
         vreg_wr_valid_o |-> vreg_pend_wr_i[vreg_wr_addr_o]
     ) else begin
-        $error("writing to a vreg which is not in the global pending writes");
+        $error("writing to a vreg which is not in the global pending writes: addr=%0d pend_wr=0x%08x pend_rd=0x%08x",
+               vreg_wr_addr_o, vreg_pend_wr_i, vreg_pend_rd_i);
     end
     assert property (
         @(posedge clk_i)

@@ -4,7 +4,7 @@
 
 
 module vproc_result #(
-        parameter int unsigned      INSTR_ID_W     = 3,    // width in bits of instruction IDs
+        parameter int unsigned      XIF_ID_W       = 3,    // width in bits of instruction IDs
         parameter bit               DONT_CARE_ZERO = 1'b0  // initialize don't care values to zero
     )(
         input  logic                clk_i,
@@ -12,49 +12,61 @@ module vproc_result #(
         input  logic                sync_rst_ni,
 
         input  logic                result_empty_valid_i,
-        input  logic [INSTR_ID_W-1:0] result_empty_id_i,
+        input  logic [XIF_ID_W-1:0] result_empty_id_i,
 
         input  logic                result_lsu_valid_i,
         output logic                result_lsu_ready_o,
-        input  logic [INSTR_ID_W-1:0] result_lsu_id_i,
+        input  logic [XIF_ID_W-1:0] result_lsu_id_i,
         input  logic                result_lsu_exc_i,
         input  logic [5:0]          result_lsu_exccode_i,
 
         input  logic                result_xreg_valid_i,
         output logic                result_xreg_ready_o,
-        input  logic [INSTR_ID_W-1:0] result_xreg_id_i,
+        input  logic [XIF_ID_W-1:0] result_xreg_id_i,
         input  logic [4:0]          result_xreg_addr_i,
         input  logic [31:0]         result_xreg_data_i,
 
+        `ifdef RISCV_ZVE32F
+        input  logic                result_freg_i,
+        output logic                result_freg_o,
+
+        input logic                 fpu_res_acc,
+        input logic [XIF_ID_W-1:0]  fpu_res_id,
+
+        `endif
+
         input  logic                result_csr_valid_i,
         output logic                result_csr_ready_o,
-        input  logic [INSTR_ID_W-1:0] result_csr_id_i,
+        input  logic [XIF_ID_W-1:0] result_csr_id_i,
         input  logic [4:0]          result_csr_addr_i,
         input  logic                result_csr_delayed_i,
         input  logic [31:0]         result_csr_data_i,
         input  logic [31:0]         result_csr_data_delayed_i,
 
-        output logic                result_valid_o,
-        input  logic                result_ready_i,
-        output logic [INSTR_ID_W-1:0] result_id_o,
-        output logic [31:0]         result_data_o,
-        output logic [4:0]          result_rd_o,
-        output logic                result_we_o,
-        output logic                result_exc_o,
-        output logic [5:0]          result_exccode_o,
-        output logic                result_err_o,
-        output logic                result_dbg_o
+        input  logic                     commit_valid_i,
+        input  logic [XIF_ID_W-1:0]     commit_id_i,
+        input  logic                     commit_kill_i,
+        output logic                     result_valid_o,
+        input  logic                     result_ready_i,
+        output logic [XIF_ID_W-1:0]     result_id_o,
+        output logic [31:0]             result_data_o,
+        output logic [4:0]              result_rd_o,
+        output logic                     result_we_o,
+        output logic                     result_exc_o,
+        output logic [5:0]              result_exccode_o,
+        output logic                     result_err_o,
+        output logic                     result_dbg_o
     );
 
     // Total count of instruction IDs used by the extension interface
-    localparam int unsigned INSTR_ID_CNT = 1 << INSTR_ID_W;
+    localparam int unsigned XIF_ID_CNT = 1 << XIF_ID_W;
 
     // buffer IDs for which an empty result shall be generated
-    logic [INSTR_ID_CNT-1:0] instr_result_empty_q, instr_result_empty_d;
+    logic [XIF_ID_CNT-1:0] instr_result_empty_q, instr_result_empty_d;
 
     // CSR result buffer
     logic                result_csr_valid_q,   result_csr_valid_d;
-    logic [INSTR_ID_W-1:0] result_csr_id_q,      result_csr_id_d;
+    logic [XIF_ID_W-1:0] result_csr_id_q,      result_csr_id_d;
     logic [4:0]          result_csr_addr_q,    result_csr_addr_d;
     logic                result_csr_delayed_q, result_csr_delayed_d;
     logic [31:0]         result_csr_data_q,    result_csr_data_d;
@@ -80,6 +92,21 @@ module vproc_result #(
         result_csr_data_q    <= result_csr_data_d;
     end
 
+    logic [XIF_ID_W-1:0] next_id_q, next_id_d;
+    always_ff @(posedge clk_i or negedge async_rst_ni) begin : vproc_next_result_id
+        if (~async_rst_ni) begin
+            next_id_q <= '0;
+        end
+        else if (~sync_rst_ni) begin
+            next_id_q <= '0;
+        end
+        else begin
+            next_id_q <= next_id_d;
+        end
+    end
+
+
+
     typedef enum logic [2:0] {
         RESULT_SOURCE_EMPTY,
         RESULT_SOURCE_EMPTY_BUF,
@@ -90,7 +117,7 @@ module vproc_result #(
     } result_source_e;
     logic                result_source_hold_q, result_source_hold_d;
     result_source_e      result_source_q,      result_source_d;
-    logic [INSTR_ID_W-1:0] result_empty_id_q,    result_empty_id_d;
+    logic [XIF_ID_W-1:0] result_empty_id_q,    result_empty_id_d;
     always_ff @(posedge clk_i or negedge async_rst_ni) begin
         if (~async_rst_ni) begin
             result_source_hold_q <= 1'b0;
@@ -106,7 +133,7 @@ module vproc_result #(
         result_empty_id_q <= result_empty_id_d;
     end
     result_source_e      result_source;
-    logic [INSTR_ID_W-1:0] result_empty_id;
+    logic [XIF_ID_W-1:0] result_empty_id;
     always_comb begin
         result_source   = RESULT_SOURCE_NONE;
         result_empty_id = DONT_CARE_ZERO ? '0 : 'x;
@@ -132,10 +159,10 @@ module vproc_result #(
             result_source = RESULT_SOURCE_EMPTY;
         end
 
-        // select the lowest instruction ID for which an empty result must be returned
-        for (int i = 0; i < INSTR_ID_CNT; i++) begin
+        // select the lowest instruction ID for which an empty result must be returned //possible issue on overflow/wraparound to id 0
+        for (int i = 0; i < XIF_ID_CNT; i++) begin
             if (instr_result_empty_q[i]) begin
-                result_empty_id = INSTR_ID_W'(i);
+                result_empty_id = XIF_ID_W'(i);
                 break;
             end
         end
@@ -174,15 +201,15 @@ module vproc_result #(
         end
 
         if (result_source == RESULT_SOURCE_EMPTY_BUF) begin
-            // clear the selected ID if the result interface is ready
-            instr_result_empty_d[result_empty_id] = ~result_ready_i;
+            // clear the selected ID if the XIF interface is ready and instruction is next to be retired
+            instr_result_empty_d[result_empty_id] = ~(result_ready_i &^ (result_empty_id == next_id_q));
         end
         if (result_source == RESULT_SOURCE_CSR_BUF) begin
-            result_csr_valid_d = ~result_ready_i;
+            result_csr_valid_d = ~result_ready_i || !(result_csr_id_q == next_id_q);
         end
 
-        // instr ID is added to buffer if another result takes precedence or result iface is not ready
-        if (result_empty_valid_i & ((result_source != RESULT_SOURCE_EMPTY) | ~result_ready_i)) begin
+        // instr ID is added to buffer if another result takes precedence or XIF iface is not ready or current instruction is not the next one to be retired
+        if (result_empty_valid_i & ((result_source != RESULT_SOURCE_EMPTY) | ~result_ready_i | result_empty_id_i != next_id_q)) begin
             instr_result_empty_d[result_empty_id_i] = 1'b1;
         end
         // CSR result is always buffered
@@ -198,6 +225,24 @@ module vproc_result #(
     assign result_lsu_ready_o  =  (result_source == RESULT_SOURCE_LSU    ) & result_ready_i;
     assign result_xreg_ready_o =  (result_source == RESULT_SOURCE_XREG   ) & result_ready_i;
     assign result_csr_ready_o  = ((result_source == RESULT_SOURCE_CSR_BUF) & result_ready_i) | ~result_csr_valid_q;
+
+    logic fpu_res_accepted;
+
+    `ifdef RISCV_ZVE32F
+    assign result_freg_o = result_xreg_ready_o & result_freg_i;
+    assign fpu_res_accepted = fpu_res_acc;
+    `else
+    assign fpu_res_accepted = 1'b0;
+    `endif
+
+
+    always_comb begin
+        next_id_d = next_id_q; //Possible for a ready result and killed commit at the same time?
+        if ((result_valid_o && result_ready_i) || fpu_res_accepted || commit_kill_i && commit_valid_i) begin
+            next_id_d = next_id_q + 1;
+        end
+    end
+
 
     always_comb begin
         result_valid_o   = '0;
@@ -215,28 +260,33 @@ module vproc_result #(
 
         unique case (result_source)
             RESULT_SOURCE_EMPTY: begin
-                result_valid_o = 1'b1;
+                result_valid_o = result_empty_id_i == next_id_q; //only raise result valid if current instruction is the one the scalar core is waiting for (no out of order retiring)
+                //result_valid_o = '1;
                 result_id_o    = result_empty_id_i;
             end
             RESULT_SOURCE_EMPTY_BUF: begin
-                result_valid_o = 1'b1;
+                result_valid_o = result_empty_id == next_id_q;
+                //result_valid_o = '1;
                 result_id_o    = result_empty_id;
             end
             RESULT_SOURCE_LSU: begin
-                result_valid_o   = 1'b1;
+                result_valid_o   = result_lsu_id_i == next_id_q;
+                //result_valid_o = '1;
                 result_id_o      = result_lsu_id_i;
                 result_exc_o     = result_lsu_exc_i;
                 result_exccode_o = result_lsu_exccode_i;
             end
             RESULT_SOURCE_XREG: begin
-                result_valid_o = 1'b1;
+                result_valid_o = result_xreg_id_i == next_id_q;
+                //result_valid_o = '1;
                 result_id_o    = result_xreg_id_i;
                 result_data_o  = result_xreg_data_i;
                 result_rd_o    = result_xreg_addr_i;
                 result_we_o    = 1'b1;
             end
             RESULT_SOURCE_CSR_BUF: begin
-                result_valid_o = 1'b1;
+                result_valid_o = result_csr_id_q == next_id_q;
+                //result_valid_o = '1;
                 result_id_o    = result_csr_id_q;
                 result_data_o  = result_csr_delayed_q ? result_csr_data_delayed_i : result_csr_data_q;
                 result_rd_o    = result_csr_addr_q;

@@ -2,11 +2,13 @@
 // Licensed under the Solderpad Hardware License v2.1, see LICENSE.txt for details
 // SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 
-
 package vproc_pkg;
 
 `define VPROC_OP_MODE_UNION
 //`define VPROC_OP_REGS_UNION
+
+import fpnew_pkg::*;
+
 
 typedef enum {
     VREG_GENERIC     = 0,
@@ -16,7 +18,7 @@ typedef enum {
 
 parameter int unsigned VLSU_FLAGS_W = 1;
 typedef enum {
-    VLSU_ALIGNED_UNITSTRIDE = 0  // base address of unit-strided loads/stores must be aligned to mem width
+    VLSU_ALIGNED_UNITSTRIDE = 0  // base address of unit-strided loads/stores must be aligned to XIF_MEM_W
 } vlsu_flag;
 
 parameter int unsigned BUF_FLAGS_W = 12;
@@ -80,11 +82,13 @@ typedef enum logic [1:0] {
     EVL_MAX      // set EVL to the maximum value for the current config
 } evl_policy;
 
-typedef enum logic [1:0] {
-    OP_SINGLEWIDTH,  // neither widening nor narrowing
-    OP_WIDENING,     // widening operation with 2*SEW =   SEW op SEW
-    OP_WIDENING_VS2, // widening operation with 2*SEW = 2*SEW op SEW
-    OP_NARROWING     // narrowing operating with  SEW = 2*SEW op SEW
+typedef enum logic [2:0] {
+    OP_SINGLEWIDTH,    // neither widening nor narrowing
+    OP_WIDENING,       // widening operation with 2*SEW =   SEW op SEW
+    OP_WIDENING_VS2,   // widening operation with 2*SEW = 2*SEW op SEW
+    OP_NARROWING,      // narrowing operating with  SEW = 2*SEW op SEW
+    OP_WIDENING_EXT2,  // widening operation with SEW = op 1/2*SEW (for [s/z]ext2)
+    OP_WIDENING_EXT4   // widening operation with SEW = op 1/4*SEW (for [s/z]ext4)
 } op_widenarrow;
 
 // fixed-point rounding mode
@@ -99,6 +103,8 @@ typedef enum logic [2:0] {
     UNIT_LSU,
     UNIT_ALU,
     UNIT_MUL,
+    UNIT_DIV,
+    UNIT_FPU,
     UNIT_SLD,
     UNIT_ELEM,
     // pseudo-units (used for instructions that require no unit):
@@ -106,7 +112,7 @@ typedef enum logic [2:0] {
 } op_unit;
 
 // The number of different types of execution units (excludes pseudo-units)
-parameter int unsigned UNIT_CNT = 5;
+parameter int unsigned UNIT_CNT = 7;
 
 typedef enum logic [1:0] {
     COUNT_INC_1,
@@ -207,6 +213,56 @@ typedef struct packed {
 `endif
 } op_mode_mul;
 
+//Ideally include this from CV32E40X package
+typedef enum logic [1:0]
+{
+    DIV_DIVU,
+    DIV_DIV,
+    DIV_REMU,
+    DIV_REM
+ } div_opcode_e;
+ 
+typedef struct packed {
+    logic       masked;
+    div_opcode_e    op;
+`ifdef VPROC_OP_MODE_UNION
+    logic [9:0] unused;
+`endif
+} op_mode_div;
+
+//Ideally include these from FP_NEW package
+//localparam int unsigned OP_BITS = 4;
+//typedef enum logic [OP_BITS-1:0] {
+//   FMADD, FNMSUB, ADD, MUL,     // ADDMUL operation group
+//   DIV, SQRT,                   // DIVSQRT operation group
+//   SGNJ, MINMAX, CMP, CLASSIFY, // NONCOMP operation group
+//   F2F, F2I, I2F, CPKAB, CPKCD  // CONV operation group
+//} fpu_opcode_e;
+
+// Rounding modes
+//typedef enum logic [2:0] {
+//   RNE = 3'b000,
+//   RTZ = 3'b001,
+//   RDN = 3'b010,
+//   RUP = 3'b011,
+//   RMM = 3'b100,
+//   ROD = 3'b101,  // This mode is not defined in RISC-V FP-SPEC
+//   DYN = 3'b111
+//} fpu_roundmode_e;
+ 
+typedef struct packed {
+    logic       masked;
+    fpnew_pkg::operation_e    op;
+    logic       op_mod;
+    logic       op_rev;
+    logic       op_reduction;
+    fpnew_pkg::roundmode_e rnd_mode;
+    logic       src_1_narrow;
+    logic       src_2_narrow;
+`ifdef VPROC_OP_MODE_UNION
+`endif
+} op_mode_fpu;
+
 typedef enum logic [0:0] {
     SLD_UP,
     SLD_DOWN
@@ -245,8 +301,15 @@ typedef struct packed {
     opcode_elem op;
     logic       sigext;
     logic       xreg;
+    `ifdef RISCV_ZVE32F
+    logic       freg;
+    `endif
 `ifdef VPROC_OP_MODE_UNION
-    logic [5:0] unused;
+    `ifdef RISCV_ZVE32F
+        logic [4:0] unused;
+    `else 
+        logic [5:0] unused;
+    `endif
 `endif
 } op_mode_elem;
 
@@ -293,6 +356,8 @@ typedef struct packed {
     op_mode_sld  sld;
     op_mode_elem elem;
     op_mode_cfg  cfg;
+    op_mode_div  div;
+    op_mode_fpu  fpu;
 } op_mode;
 
 // source register type:
@@ -322,6 +387,7 @@ typedef struct packed {
     logic vreg;
     logic elemwise;
     logic narrow;
+    logic vf4_ext;
     logic sigext;
 } unpack_flags;
 
@@ -333,6 +399,25 @@ typedef struct packed {
     logic       saturate;
     logic       sig;
     logic [2:0] mul_idx;
+    logic [4:0] vreg_idx; //TODO: This should be defined per pipeline as log2(VREG_W/MAX_OP_W) bits wide
 } pack_flags;
+
+
+// FPU configuration: features//TODO: IDEALLY INCLUDE THIS FROM fpnew_pkg
+typedef struct packed {
+    int unsigned Width;
+    logic        EnableVectors;
+    logic        EnableNanBox;
+    logic [4:0] FpFmtMask;
+    logic [3:0] IntFmtMask;
+} fpu_features_t;
+
+localparam fpu_features_t RV32ZVFH = '{
+    Width:         32,
+    EnableVectors: 1'b1,
+    EnableNanBox:  1'b1,
+    FpFmtMask:     5'b10101,
+    IntFmtMask:    4'b0110
+};
 
 endpackage

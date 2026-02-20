@@ -84,7 +84,8 @@ module ibex_top #(
     output logic                         ecsr_we_o   [ExternalCSRs > 0 ? ExternalCSRs : 1],
     output logic [31:0]                  ecsr_wdata_o[ExternalCSRs > 0 ? ExternalCSRs : 1],
 
-    // Vector CSR interface (to/from vector core)
+    output logic [2:0]                   fcsr_frm_o,
+
     output logic [31:0]                  vcsr_vtype_o,
     output logic [31:0]                  vcsr_vl_o,
     output logic [31:0]                  vcsr_vlenb_o,
@@ -310,6 +311,7 @@ module ibex_top #(
     .ecsr_we_o,
     .ecsr_wdata_o,
 
+    .fcsr_frm_o,
     .vcsr_vtype_o,
     .vcsr_vl_o,
     .vcsr_vlenb_o,

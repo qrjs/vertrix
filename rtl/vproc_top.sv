@@ -3,7 +3,11 @@
 // SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 
 
-module vproc_top import vproc_pkg::*; #(
+module vproc_top import vproc_pkg::*;
+`ifdef RISCV_ZVE32F
+    import fpnew_pkg::*;
+`endif
+#(
         parameter int unsigned     MEM_W         = 32,  // memory bus width in bits
         parameter int unsigned     VMEM_W        = 32,  // vector memory interface width in bits
         parameter vreg_type        VREG_TYPE     = VREG_GENERIC,
@@ -33,7 +37,8 @@ module vproc_top import vproc_pkg::*; #(
         input  logic               dmem_err_i,
         input  logic [MEM_W  -1:0] dmem_rdata_i,
 
-        output logic [31:0]        pend_vreg_wr_map_o
+        output logic [31:0]        pend_vreg_wr_map_o,
+        output logic               core_sleep_o
     );
 
     if ((MEM_W & (MEM_W - 1)) != 0 || MEM_W < 32) begin
@@ -122,7 +127,8 @@ module vproc_top import vproc_pkg::*; #(
     logic [VMEM_W-1:0] vlsu_mem_result_rdata;
     logic        vlsu_mem_result_err;
 
-    // Vector CSR interface signals (now stored in unified CSR file)
+    logic [2:0]  fcsr_frm;
+
     logic [31:0] vcsr_vtype;
     logic [31:0] vcsr_vl;
     logic [31:0] vcsr_vlenb;
@@ -215,7 +221,8 @@ module vproc_top import vproc_pkg::*; #(
         .ecsr_we_o              (                                    ),
         .ecsr_wdata_o           (                                    ),
 
-        // Vector CSR interface
+        .fcsr_frm_o             ( fcsr_frm                           ),
+
         .vcsr_vtype_o           ( vcsr_vtype                         ),
         .vcsr_vl_o              ( vcsr_vl                            ),
         .vcsr_vlenb_o           ( vcsr_vlenb                         ),
@@ -239,7 +246,7 @@ module vproc_top import vproc_pkg::*; #(
         .fetch_enable_i         ( 1'b1                               ),
         .alert_minor_o          (                                    ),
         .alert_major_o          (                                    ),
-        .core_sleep_o           (                                    ),
+        .core_sleep_o           ( core_sleep_o                       ),
 
         .scan_rst_ni            ( 1'b1                               )
     );
@@ -266,6 +273,23 @@ module vproc_top import vproc_pkg::*; #(
     assign cpi_commit_d = issue_valid & issue_ready & issue_accept;
 
     assign cpi_is_matrix  = cpi_instr_valid & (cpi_instr[6:0] == 7'b0001011);
+    
+    logic mat_instr_active_q;
+    always_ff @(posedge clk_i or negedge rst_ni) begin
+        if (~rst_ni) begin
+            mat_instr_active_q <= 1'b0;
+        end else begin
+            if (cpi_is_matrix & mat_instr_gnt) begin
+                mat_instr_active_q <= 1'b1;
+            end else if (mat_res_valid) begin
+                mat_instr_active_q <= 1'b0;
+            end
+        end
+    end
+    
+    logic mat_active;
+    assign mat_active = cpi_is_matrix | mat_instr_active_q;
+    
     assign issue_valid    = cpi_instr_valid & ~cpi_is_matrix;
     assign issue_instr    = cpi_instr;
     assign issue_mode     = '0;
@@ -276,17 +300,19 @@ module vproc_top import vproc_pkg::*; #(
 
     assign cpi_instr_gnt     = cpi_is_matrix ? mat_instr_gnt : issue_ready;
     assign cpi_instr_illegal = cpi_is_matrix ? mat_instr_illegal : ~issue_accept;
-    assign cpi_xreg_wait     = cpi_is_matrix ? mat_wait : issue_writeback;
+    assign cpi_xreg_wait     = mat_active ? mat_wait : issue_writeback;
 
     assign commit_valid = cpi_commit_q;
     assign commit_id    = cpi_instr_id_q2;
     assign commit_kill  = 1'b0;
 
     assign result_ready   = 1'b1;
-    assign cpi_result_valid = cpi_is_matrix ? mat_res_valid : (result_valid & result_we);
-    assign cpi_xreg         = cpi_is_matrix ? mat_res : result_data;
+    assign cpi_result_valid = mat_active ? mat_res_valid : (result_valid & result_we);
+    assign cpi_xreg         = mat_active ? mat_res : result_data;
 
-    matrix_unit mat_unit (
+    outer_product_matrix_unit #(
+        .MEM_WIDTH       ( 64               )
+    ) mat_unit (
         .clk_i           ( clk_i            ),
         .rst_ni          ( rst_ni           ),
         .instr_valid_i   ( cpi_is_matrix    ),
@@ -444,6 +470,15 @@ module vproc_top import vproc_pkg::*; #(
         .csr_vxsat_o        ( csr_vxsat_wr       ),  // vxsat write value from vector core
         .csr_vxsat_set_o    ( csr_vxsat_wren     ),  // vxsat write enable from vector core
 
+    `ifdef RISCV_ZVE32F
+        .fpr_wr_req_valid_o (                    ),
+        .fpr_wr_req_addr_o  (                    ),
+        .fpr_res_valid_o    (                    ),
+        .float_round_mode_i ( fpnew_pkg::roundmode_e'(fcsr_frm) ),
+        .fpu_res_acc_i      ( 1'b0               ),
+        .fpu_res_id_i       ( '0                 ),
+    `endif
+
         .pend_vreg_wr_map_o ( pend_vreg_wr_map_o )
     );
 
@@ -485,12 +520,12 @@ module vproc_top import vproc_pkg::*; #(
     logic [31:0]         sdata_wait_addr;
     logic [31:0]         mdata_wait_addr;
     logic [X_ID_WIDTH-1:0] vdata_wait_id;
-    assign sdata_hold = vdata_req | vect_pending_store | (vect_pending_load & sdata_we);
+    assign sdata_hold = vdata_req | vect_pending_store | (vect_pending_load & sdata_we) | mdata_req;
     assign mdata_byte_off_req = mdata_addr[$clog2(VMEM_BYTES)-1:0];
     assign mdata_lane_off_req = (mdata_byte_off_req >> MDATA_ALIGN_BITS) << MDATA_ALIGN_BITS;
     assign mdata_byte_off_resp = mdata_wait_addr[$clog2(VMEM_BYTES)-1:0];
     assign mdata_lane_off_resp = (mdata_byte_off_resp >> MDATA_ALIGN_BITS) << MDATA_ALIGN_BITS;
-    assign mdata_hold = vdata_req | (sdata_req & ~sdata_hold);
+    assign mdata_hold = vdata_req;
     always_comb begin
         data_req   = vdata_req | (sdata_req & ~sdata_hold) | (mdata_req & ~mdata_hold);
         data_addr  = sdata_addr;
@@ -503,10 +538,14 @@ module vproc_top import vproc_pkg::*; #(
         if (mdata_req & ~mdata_hold) begin
             data_addr  = mdata_addr;
             data_we    = mdata_we;
-            data_be    = {{(VMEM_W-64){1'b0}}, mdata_be} << mdata_lane_off_req;
+            data_be    = VMEM_W >= 64 ? ({{(VMEM_W > 64 ? VMEM_W-64 : 1){1'b0}}, mdata_be} << mdata_lane_off_req) : mdata_be[VMEM_W/8-1:0];
             data_wdata = '0;
-            for (int i = 0; i < VMEM_W / 64; i++) begin
-                data_wdata[64*i +: 64] = mdata_wdata;
+            if (VMEM_W >= 64) begin
+                for (int i = 0; i < VMEM_W / 64; i++) begin
+                    data_wdata[64*i +: 64] = mdata_wdata;
+                end
+            end else begin
+                data_wdata = mdata_wdata[VMEM_W-1:0];
             end
         end
         if (vdata_req) begin
@@ -559,7 +598,13 @@ module vproc_top import vproc_pkg::*; #(
     assign mdata_err    = data_err;
     assign sdata_rdata  = data_rdata[(sdata_wait_addr[$clog2(VMEM_W)-1:0] & {3'b000, {($clog2(VMEM_W/8)-2){1'b1}}, 2'b00})*8 +: 32];
     assign vdata_rdata  = data_rdata;
-    assign mdata_rdata  = data_rdata[mdata_lane_off_resp*8 +: 64];
+    generate
+        if (VMEM_W >= 64) begin : gen_mdata_rdata_wide
+            assign mdata_rdata = data_rdata[mdata_lane_off_resp*8 +: 64];
+        end else begin : gen_mdata_rdata_narrow
+            assign mdata_rdata = {{(64-VMEM_W){1'b0}}, data_rdata};
+        end
+    endgenerate
     assign vdata_res_id = vdata_wait_id;
 
 

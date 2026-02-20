@@ -6,8 +6,8 @@
 module vproc_pipeline_wrapper import vproc_pkg::*; #(
         parameter int unsigned          VREG_W             = 128,  // width in bits of vector registers
         parameter int unsigned          CFG_VL_W           = 7,    // width of VL reg in bits (= log2(VREG_W))
-        parameter int unsigned          INSTR_ID_W         = 3,    // width in bits of instruction IDs
-        parameter int unsigned          INSTR_ID_CNT       = 8,    // total count of instruction IDs
+        parameter int unsigned          XIF_ID_W           = 3,    // width in bits of instruction IDs
+        parameter int unsigned          XIF_ID_CNT         = 8,    // total count of instruction IDs
         parameter bit [UNIT_CNT-1:0]    UNITS              = '0,
         parameter int unsigned          MAX_VPORT_W        = 128,  // max port width
         parameter int unsigned          MAX_VADDR_W        = 5,    // max addr width
@@ -43,9 +43,9 @@ module vproc_pipeline_wrapper import vproc_pkg::*; #(
         output logic [31:0]             vreg_pend_rd_o,
         input  logic [31:0]             vreg_pend_rd_i,
 
-        input  instr_state [INSTR_ID_CNT-1:0] instr_state_i,
+        input  instr_state [XIF_ID_CNT-1:0] instr_state_i,
         output logic                    instr_done_valid_o,
-        output logic [INSTR_ID_W-1:0]   instr_done_id_o,
+        output logic [XIF_ID_W-1:0]     instr_done_id_o,
 
         output logic [VPORT_CNT-1:0][MAX_VADDR_W-1:0] vreg_rd_addr_o,       // vreg read address
         input  logic [VPORT_CNT-1:0][MAX_VPORT_W-1:0] vreg_rd_data_i,       // vreg read data
@@ -62,34 +62,40 @@ module vproc_pipeline_wrapper import vproc_pkg::*; #(
         output logic                    pending_load_o,
         output logic                    pending_store_o,
 
-        output logic                    vlsu_mem_valid_o,
-        input  logic                    vlsu_mem_ready_i,
-        output logic [INSTR_ID_W-1:0]   vlsu_mem_id_o,
-        output logic [31:0]             vlsu_mem_addr_o,
-        output logic                    vlsu_mem_we_o,
-        output logic [MAX_OP_W/8-1:0]   vlsu_mem_be_o,
-        output logic [MAX_OP_W-1:0]     vlsu_mem_wdata_o,
-        output logic                    vlsu_mem_last_o,
-        output logic                    vlsu_mem_spec_o,
-        input  logic                    vlsu_mem_resp_exc_i,
-        input  logic [5:0]              vlsu_mem_resp_exccode_i,
-        input  logic                    vlsu_mem_result_valid_i,
-        input  logic [INSTR_ID_W-1:0]   vlsu_mem_result_id_i,
-        input  logic [MAX_OP_W-1:0]     vlsu_mem_result_rdata_i,
-        input  logic                    vlsu_mem_result_err_i,
+        output logic                                 vlsu_mem_valid_o,
+        input  logic                                 vlsu_mem_ready_i,
+        output logic [XIF_ID_W-1:0]                  vlsu_mem_id_o,
+        output logic [31:0]                          vlsu_mem_addr_o,
+        output logic                                 vlsu_mem_we_o,
+        output logic [MAX_OP_W/8-1:0]                vlsu_mem_be_o,
+        output logic [MAX_OP_W-1:0]                  vlsu_mem_wdata_o,
+        output logic                                 vlsu_mem_last_o,
+        output logic                                 vlsu_mem_spec_o,
+        input  logic                                 vlsu_mem_resp_exc_i,
+        input  logic [5:0]                           vlsu_mem_resp_exccode_i,
+        input  logic                                 vlsu_mem_result_valid_i,
+        input  logic [XIF_ID_W-1:0]                  vlsu_mem_result_id_i,
+        input  logic [MAX_OP_W-1:0]                  vlsu_mem_result_rdata_i,
+        input  logic                                 vlsu_mem_result_err_i,
 
         output logic                    trans_complete_valid_o,
         input  logic                    trans_complete_ready_i,
-        output logic [INSTR_ID_W-1:0]   trans_complete_id_o,
+        output logic [XIF_ID_W-1:0]     trans_complete_id_o,
         output logic                    trans_complete_exc_o,
         output logic [5:0]              trans_complete_exccode_o,
 
+        `ifdef RISCV_ZVE32F
+        output logic                    freg_res,
+        `endif 
+        
         output logic                    xreg_valid_o,
         input  logic                    xreg_ready_i,
-        output logic [INSTR_ID_W-1:0]   xreg_id_o,
+        output logic [XIF_ID_W-1:0]     xreg_id_o,
         output logic [4:0]              xreg_addr_o,
         output logic [31:0]             xreg_data_o
     );
+    
+    import fpnew_pkg::*;
 
 `ifdef VERILATOR
     // Workaround for Verilator due to https://github.com/verilator/verilator/issues/3433
@@ -114,7 +120,7 @@ module vproc_pipeline_wrapper import vproc_pkg::*; #(
     //  +-----+------+----------+----------------+-----------------------------------------------+
     //  |  0  | data | vs2 (vd) |      all       | Only MUL may change address to vd             |
     //  |  1  | data | vs1 (vd) | all except SLD | Only LSU uses vd as address instead of vs1    |
-    //  |  2  | data |  vd/vs2  |      MUL       | MUL may use either vd or vs2 as address       |
+    //  |  2  | data |  vd/vs2  |   MUL,   FPU   | MUL and FPU may use either vd or vs2 as address       |
     //  | -3  | data | dynamic  |     ELEM       | Index-based dynamic address within vreg group |
     //  | -2  | mask |   vs2    |     ELEM       | Mask operand for some ELEM operations         |
     //  | -1  | mask |    v0    |      all       | Mask operand for masked operations            |
@@ -125,7 +131,7 @@ module vproc_pipeline_wrapper import vproc_pkg::*; #(
     // - ELEM unit additionally requires indices -3 and -2, hence a minimum of 5 operands
     // - if MUL and ELEM units are both present in same pipeline, then all 6 operands are required
     // - in case a pipeline contains only the SLD unit the operand count is 2 (indices 0 and -1)
-    localparam int unsigned OP_CNT        = UNITS[UNIT_MUL] ? (
+    localparam int unsigned OP_CNT        = (UNITS[UNIT_MUL] | UNITS[UNIT_FPU]) ? (
                                                 UNITS[UNIT_ELEM] ? 6 : 4
                                             ) : (
                                                 UNITS[UNIT_ELEM] ? 5 : (
@@ -140,7 +146,7 @@ module vproc_pipeline_wrapper import vproc_pkg::*; #(
     // should be fetched at the latest possible stage, since the pipeline waits until the alt count
     // completes its cycle before accepting the next instruction.
     localparam int unsigned OP0_SRC   = 0;
-    localparam int unsigned OP1_SRC   = (VPORT_CNT >= (UNITS[UNIT_MUL] ? 3 : 2)) ? 1 : 0;
+    localparam int unsigned OP1_SRC   = (VPORT_CNT >= ((UNITS[UNIT_MUL] | UNITS[UNIT_FPU]) ? 3 : 2)) ? 1 : 0;
     localparam int unsigned OP2_SRC   = VPORT_CNT - 1;
     localparam int unsigned MIN_STAGE = 1; // first possible unpack stage
     // start by fetching op 0, then op1, except for ELEM unit which needs to fetch op1 first since
@@ -160,7 +166,7 @@ module vproc_pipeline_wrapper import vproc_pkg::*; #(
                                         );
 
     // Verify that shared read ports are sufficiently wide
-    if (UNITS[UNIT_MUL] & (OP0_SRC == OP1_SRC) & (OP0_SRC == OP2_SRC) & (MAX_OP_W * 2 >= VPORT_W[OP0_SRC])) begin
+    if ((UNITS[UNIT_MUL] | UNITS[UNIT_FPU]) & (OP0_SRC == OP1_SRC) & (OP0_SRC == OP2_SRC) & (MAX_OP_W * 2 >= VPORT_W[OP0_SRC])) begin
         $fatal(1, "If operands 0, 1, and 2 share the same source read port, then the operand ",
                   "width must not be larger than one quarter of the read port width (the current ",
                   "read port width is %d bits, hence the operand width can be at most %d bits; ",
@@ -178,12 +184,12 @@ module vproc_pipeline_wrapper import vproc_pkg::*; #(
     // operand flags
     localparam bit OP_DYN_ADDR_OFFSET     = UNITS[UNIT_ELEM];   // operand with dynamic addr used
     localparam bit OP_SECOND_MASK         = UNITS[UNIT_ELEM];   // second mask operand used
-    localparam bit OP0_NARROW             = UNITS[UNIT_MUL] | UNITS[UNIT_ALU] | UNITS[UNIT_ELEM];
-    localparam bit OP1_NARROW             = UNITS[UNIT_MUL] | UNITS[UNIT_ALU];
-    localparam bit OP1_XREG               = UNITS[UNIT_MUL] | UNITS[UNIT_ALU];
-    localparam bit OP0_ELEMWISE           = UNITS[UNIT_LSU] | UNITS[UNIT_ELEM];
-    localparam bit OP1_ELEMWISE           = UNITS[UNIT_LSU] | UNITS[UNIT_ELEM];
-    localparam bit OPMASK_ELEMWISE        = UNITS[UNIT_LSU] | UNITS[UNIT_ELEM];
+    localparam bit OP0_NARROW             = UNITS[UNIT_MUL] | UNITS[UNIT_ALU] | UNITS[UNIT_ELEM] | UNITS[UNIT_FPU];
+    localparam bit OP1_NARROW             = UNITS[UNIT_MUL] | UNITS[UNIT_ALU] | UNITS[UNIT_FPU];
+    localparam bit OP1_XREG               = UNITS[UNIT_MUL] | UNITS[UNIT_ALU] | UNITS[UNIT_DIV] | UNITS[UNIT_FPU];
+    localparam bit OP0_ELEMWISE           = UNITS[UNIT_LSU] | UNITS[UNIT_ELEM] | UNITS[UNIT_FPU];
+    localparam bit OP1_ELEMWISE           = UNITS[UNIT_LSU] | UNITS[UNIT_ELEM] | UNITS[UNIT_FPU];
+    localparam bit OPMASK_ELEMWISE        = UNITS[UNIT_LSU] | UNITS[UNIT_ELEM] | UNITS[UNIT_FPU];
     localparam bit OP0_ALT_COUNTER        = UNITS[UNIT_SLD];
 
     // result count and default width
@@ -192,8 +198,8 @@ module vproc_pipeline_wrapper import vproc_pkg::*; #(
 
     // result flags
     localparam bit RES0_ALWAYS_VREG       = ~UNITS[UNIT_LSU] & ~UNITS[UNIT_ALU] & ~UNITS[UNIT_ELEM];
-    localparam bit RES0_NARROW            = UNITS[UNIT_ALU];
-    localparam bit RES0_ALLOW_ELEMWISE    = UNITS[UNIT_LSU] | UNITS[UNIT_ELEM];
+    localparam bit RES0_NARROW            = UNITS[UNIT_ALU];//Might need to add FPU HERE from conversion ops
+    localparam bit RES0_ALLOW_ELEMWISE    = UNITS[UNIT_LSU] | UNITS[UNIT_ELEM] | UNITS[UNIT_FPU];
 
     // miscellaneous pipeline config
     localparam bit FIELD_COUNT_USED       = UNITS[UNIT_LSU];
@@ -211,7 +217,7 @@ module vproc_pipeline_wrapper import vproc_pkg::*; #(
         count_inc_e                      count_inc;         // counter increment policy
         logic                      [2:0] field_count_init;  // field counter initial value
         logic                            requires_flush;    // whether the instr requires flushing
-        logic        [INSTR_ID_W   -1:0] id;
+        logic        [XIF_ID_W     -1:0] id;
         op_unit                          unit;
         op_mode                          mode;
         cfg_vsew                         eew;               // effective element width
@@ -229,12 +235,14 @@ module vproc_pipeline_wrapper import vproc_pkg::*; #(
     } state_t;
 
     // identify the unit of the supplied instruction
-    logic unit_lsu, unit_alu, unit_mul, unit_sld, unit_elem;
+    logic unit_lsu, unit_alu, unit_mul, unit_sld, unit_elem, unit_div, unit_fpu;
     assign unit_lsu  = UNITS[UNIT_LSU ] & (pipe_in_data_i.unit == UNIT_LSU );
     assign unit_alu  = UNITS[UNIT_ALU ] & (pipe_in_data_i.unit == UNIT_ALU );
     assign unit_mul  = UNITS[UNIT_MUL ] & (pipe_in_data_i.unit == UNIT_MUL );
     assign unit_sld  = UNITS[UNIT_SLD ] & (pipe_in_data_i.unit == UNIT_SLD );
     assign unit_elem = UNITS[UNIT_ELEM] & (pipe_in_data_i.unit == UNIT_ELEM);
+    assign unit_div  = UNITS[UNIT_DIV]  & (pipe_in_data_i.unit == UNIT_DIV);
+    assign unit_fpu  = UNITS[UNIT_FPU]  & (pipe_in_data_i.unit == UNIT_FPU);
 
     // identify the type of data that vs2 supplies for ELEM instructions
     logic elem_flush, elem_vs2_data, elem_vs2_mask, elem_vs2_dyn_addr;
@@ -392,7 +400,7 @@ module vproc_pipeline_wrapper import vproc_pkg::*; #(
         end
 
         state_init.count_inc = COUNT_INC_MAX;
-        if (unit_lsu) begin
+        if (unit_lsu) begin 
             state_init.count_inc = DONT_CARE_ZERO ? count_inc_e'('0) : count_inc_e'('x);
             unique case (pipe_in_data_i.mode.lsu.eew)
                 VSEW_8:  state_init.count_inc = COUNT_INC_1;
@@ -414,8 +422,18 @@ module vproc_pipeline_wrapper import vproc_pkg::*; #(
             endcase
         end
 
+        //For reduction ops on FPU, need to change the counter increment
+        if (unit_fpu & pipe_in_data_i.mode.fpu.op_reduction) begin
+            state_init.count_inc = DONT_CARE_ZERO ? count_inc_e'('0) : count_inc_e'('x);
+            unique case (pipe_in_data_i.vsew)
+                VSEW_16: state_init.count_inc = COUNT_INC_2;
+                VSEW_32: state_init.count_inc = COUNT_INC_4;
+                default: ;
+            endcase
+        end
+
         state_init.field_count_init = unit_lsu ? pipe_in_data_i.mode.lsu.nfields : '0;
-        state_init.requires_flush = unit_elem & elem_flush;
+        state_init.requires_flush = (unit_elem & elem_flush) | (unit_fpu & pipe_in_data_i.mode.fpu.op_reduction);
         state_init.id             = pipe_in_data_i.id;
         state_init.unit           = pipe_in_data_i.unit;
         state_init.mode           = pipe_in_data_i.mode;
@@ -444,13 +462,13 @@ module vproc_pipeline_wrapper import vproc_pkg::*; #(
                 endcase
             end
         end
-
         for (int i = 0; i < OP_CNT; i++) begin
             state_init.op_flags[i]    = unpack_flags'('0);
         end
 
         state_init.op_flags[0].vreg   = pipe_in_data_i.rs2.vreg;
-        state_init.op_flags[0].narrow = pipe_in_data_i.widenarrow == OP_WIDENING;
+        state_init.op_flags[0].narrow = (pipe_in_data_i.widenarrow == OP_WIDENING || pipe_in_data_i.widenarrow == OP_WIDENING_EXT2 || pipe_in_data_i.widenarrow == OP_WIDENING_EXT4);
+        state_init.op_flags[0].vf4_ext = (pipe_in_data_i.widenarrow == OP_WIDENING_EXT4);
         state_init.op_vaddr[0]        = pipe_in_data_i.rs2.r.vaddr;
         state_init.op_xval [0]        = pipe_in_data_i.rs2.r.xval;
 
@@ -464,6 +482,8 @@ module vproc_pipeline_wrapper import vproc_pkg::*; #(
             unit_lsu:  state_init.op_flags[OP_CNT-1].vreg = pipe_in_data_i.mode.lsu.masked;
             unit_alu:  state_init.op_flags[OP_CNT-1].vreg = pipe_in_data_i.mode.alu.op_mask != ALU_MASK_NONE;
             unit_mul:  state_init.op_flags[OP_CNT-1].vreg = pipe_in_data_i.mode.mul.masked;
+            unit_div:  state_init.op_flags[OP_CNT-1].vreg = pipe_in_data_i.mode.div.masked;
+            unit_fpu:  state_init.op_flags[OP_CNT-1].vreg = pipe_in_data_i.mode.div.masked;
             unit_sld:  state_init.op_flags[OP_CNT-1].vreg = pipe_in_data_i.mode.sld.masked;
             unit_elem: state_init.op_flags[OP_CNT-1].vreg = pipe_in_data_i.mode.elem.masked;
             default: ;
@@ -473,7 +493,7 @@ module vproc_pipeline_wrapper import vproc_pkg::*; #(
         state_init.res_narrow[0] = '0;
         state_init.res_vaddr     = pipe_in_data_i.rd.addr;
 
-        if (unit_lsu) begin
+        if (unit_lsu) begin 
             state_init.op_flags[0       ].elemwise =  pipe_in_data_i.mode.lsu.stride != LSU_UNITSTRIDE;
             state_init.op_flags[1       ].vreg     =  pipe_in_data_i.mode.lsu.store;
             state_init.op_flags[1       ].elemwise =  pipe_in_data_i.mode.lsu.stride != LSU_UNITSTRIDE;
@@ -508,6 +528,17 @@ module vproc_pipeline_wrapper import vproc_pkg::*; #(
             state_init.op_vaddr[                OP_CNT-2    ]          = pipe_in_data_i.rs2.r.vaddr;
             state_init.op_flags[                OP_CNT-1    ].elemwise = 1'b1;
         end
+         if (unit_fpu) begin
+            //For widening ops always pad with 0s
+            state_init.op_flags[0].sigext                   = 1'b0;
+            state_init.op_flags[1].sigext                   = 1'b0;
+            state_init.op_flags[0].elemwise                 = pipe_in_data_i.mode.fpu.op_reduction;
+            state_init.op_flags[1].elemwise                 = pipe_in_data_i.mode.fpu.op_reduction;
+            state_init.op_flags[2].elemwise                 = pipe_in_data_i.mode.fpu.op_reduction;
+            state_init.op_flags[(OP_CNT >= 3) ? 2 : 0].vreg = (pipe_in_data_i.mode.fpu.op == FMADD | pipe_in_data_i.mode.fpu.op == FNMSUB);
+            state_init.op_vaddr[(OP_CNT >= 3) ? 2 : 0]      = pipe_in_data_i.rd.addr;
+
+         end
     end
 
 
@@ -536,8 +567,8 @@ module vproc_pipeline_wrapper import vproc_pkg::*; #(
             vproc_pipeline #(
                 .VREG_W              ( VREG_W              ),
                 .CFG_VL_W            ( CFG_VL_W            ),
-                .INSTR_ID_W          ( INSTR_ID_W          ),
-                .INSTR_ID_CNT        ( INSTR_ID_CNT        ),
+                .XIF_ID_W            ( XIF_ID_W            ),
+                .XIF_ID_CNT          ( XIF_ID_CNT          ),
                 .UNITS               ( UNITS               ),
                 .MAX_VPORT_W         ( MAX_VPORT_W         ),
                 .MAX_VADDR_W         ( MAX_VADDR_W         ),
@@ -601,8 +632,8 @@ module vproc_pipeline_wrapper import vproc_pkg::*; #(
             vproc_pipeline #(
                 .VREG_W              ( VREG_W              ),
                 .CFG_VL_W            ( CFG_VL_W            ),
-                .INSTR_ID_W          ( INSTR_ID_W          ),
-                .INSTR_ID_CNT        ( INSTR_ID_CNT        ),
+                .XIF_ID_W            ( XIF_ID_W            ),
+                .XIF_ID_CNT          ( XIF_ID_CNT          ),
                 .UNITS               ( UNITS               ),
                 .MAX_VPORT_W         ( MAX_VPORT_W         ),
                 .MAX_VADDR_W         ( MAX_VADDR_W         ),
@@ -666,8 +697,8 @@ module vproc_pipeline_wrapper import vproc_pkg::*; #(
             vproc_pipeline #(
                 .VREG_W              ( VREG_W              ),
                 .CFG_VL_W            ( CFG_VL_W            ),
-                .INSTR_ID_W          ( INSTR_ID_W          ),
-                .INSTR_ID_CNT        ( INSTR_ID_CNT        ),
+                .XIF_ID_W            ( XIF_ID_W            ),
+                .XIF_ID_CNT          ( XIF_ID_CNT          ),
                 .UNITS               ( UNITS               ),
                 .MAX_VPORT_W         ( MAX_VPORT_W         ),
                 .MAX_VADDR_W         ( MAX_VADDR_W         ),
@@ -731,8 +762,8 @@ module vproc_pipeline_wrapper import vproc_pkg::*; #(
             vproc_pipeline #(
                 .VREG_W              ( VREG_W              ),
                 .CFG_VL_W            ( CFG_VL_W            ),
-                .INSTR_ID_W          ( INSTR_ID_W          ),
-                .INSTR_ID_CNT        ( INSTR_ID_CNT        ),
+                .XIF_ID_W            ( XIF_ID_W            ),
+                .XIF_ID_CNT          ( XIF_ID_CNT          ),
                 .UNITS               ( UNITS               ),
                 .MAX_VPORT_W         ( MAX_VPORT_W         ),
                 .MAX_VADDR_W         ( MAX_VADDR_W         ),
@@ -796,8 +827,8 @@ module vproc_pipeline_wrapper import vproc_pkg::*; #(
             vproc_pipeline #(
                 .VREG_W              ( VREG_W              ),
                 .CFG_VL_W            ( CFG_VL_W            ),
-                .INSTR_ID_W          ( INSTR_ID_W          ),
-                .INSTR_ID_CNT        ( INSTR_ID_CNT        ),
+                .XIF_ID_W            ( XIF_ID_W            ),
+                .XIF_ID_CNT          ( XIF_ID_CNT          ),
                 .UNITS               ( UNITS               ),
                 .MAX_VPORT_W         ( MAX_VPORT_W         ),
                 .MAX_VADDR_W         ( MAX_VADDR_W         ),
@@ -861,8 +892,8 @@ module vproc_pipeline_wrapper import vproc_pkg::*; #(
             vproc_pipeline #(
                 .VREG_W              ( VREG_W              ),
                 .CFG_VL_W            ( CFG_VL_W            ),
-                .INSTR_ID_W          ( INSTR_ID_W          ),
-                .INSTR_ID_CNT        ( INSTR_ID_CNT        ),
+                .XIF_ID_W            ( XIF_ID_W            ),
+                .XIF_ID_CNT          ( XIF_ID_CNT          ),
                 .UNITS               ( UNITS               ),
                 .MAX_VPORT_W         ( MAX_VPORT_W         ),
                 .MAX_VADDR_W         ( MAX_VADDR_W         ),
@@ -926,8 +957,8 @@ module vproc_pipeline_wrapper import vproc_pkg::*; #(
             vproc_pipeline #(
                 .VREG_W              ( VREG_W              ),
                 .CFG_VL_W            ( CFG_VL_W            ),
-                .INSTR_ID_W          ( INSTR_ID_W          ),
-                .INSTR_ID_CNT        ( INSTR_ID_CNT        ),
+                .XIF_ID_W            ( XIF_ID_W            ),
+                .XIF_ID_CNT          ( XIF_ID_CNT          ),
                 .UNITS               ( UNITS               ),
                 .MAX_VPORT_W         ( MAX_VPORT_W         ),
                 .MAX_VADDR_W         ( MAX_VADDR_W         ),
@@ -991,8 +1022,8 @@ module vproc_pipeline_wrapper import vproc_pkg::*; #(
             vproc_pipeline #(
                 .VREG_W              ( VREG_W              ),
                 .CFG_VL_W            ( CFG_VL_W            ),
-                .INSTR_ID_W          ( INSTR_ID_W          ),
-                .INSTR_ID_CNT        ( INSTR_ID_CNT        ),
+                .XIF_ID_W            ( XIF_ID_W            ),
+                .XIF_ID_CNT          ( XIF_ID_CNT          ),
                 .UNITS               ( UNITS               ),
                 .MAX_VPORT_W         ( MAX_VPORT_W         ),
                 .MAX_VADDR_W         ( MAX_VADDR_W         ),
@@ -1056,8 +1087,8 @@ module vproc_pipeline_wrapper import vproc_pkg::*; #(
             vproc_pipeline #(
                 .VREG_W              ( VREG_W              ),
                 .CFG_VL_W            ( CFG_VL_W            ),
-                .INSTR_ID_W          ( INSTR_ID_W          ),
-                .INSTR_ID_CNT        ( INSTR_ID_CNT        ),
+                .XIF_ID_W            ( XIF_ID_W            ),
+                .XIF_ID_CNT          ( XIF_ID_CNT          ),
                 .UNITS               ( UNITS               ),
                 .MAX_VPORT_W         ( MAX_VPORT_W         ),
                 .MAX_VADDR_W         ( MAX_VADDR_W         ),

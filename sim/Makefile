@@ -92,9 +92,15 @@ $(PROJ_DIR)/obj_dir/Vvproc_top.mk: verilator-version-check $(VPROC_CONFIG_PKG) $
 	if [ -n "$(ENABLE_PERF_COUNTERS)" ] && [ "$(ENABLE_PERF_COUNTERS)" != "0" ]; then \
 	    options="$$options -DVPROC_PERF_COUNTERS";                            \
 	fi;                                                                       \
+	options="$$options -DOLD_VICUNA";                                        \
 	core="";                                                                  \
 	inc="";                                                                   \
 	src="";                                                                   \
+	fp_defs="-DRISCV_ZVE32F";                                                 \
+	fp_src="$(SIM_DIR)/../rtl/cvfpu/src/fpnew_pkg.sv $(SIM_DIR)/../rtl/cvfpu/src/common_cells/src/cf_math_pkg.sv"; \
+	fp_inc="-I$(SIM_DIR)/../rtl/cvfpu/src/common_cells/include/";             \
+	fp_src="$$fp_src $(SIM_DIR)/../rtl/cvfpu/src/common_cells/src/lzc.sv $(SIM_DIR)/../rtl/cvfpu/src/common_cells/src/rr_arb_tree.sv $(SIM_DIR)/../rtl/cvfpu/src/fpnew_top.sv $(SIM_DIR)/../rtl/cvfpu/src/fpnew_opgroup_block.sv $(SIM_DIR)/../rtl/cvfpu/src/fpnew_opgroup_fmt_slice.sv $(SIM_DIR)/../rtl/cvfpu/src/fpnew_opgroup_multifmt_slice.sv $(SIM_DIR)/../rtl/cvfpu/src/fpnew_fma_multi.sv $(SIM_DIR)/../rtl/cvfpu/src/fpnew_fma.sv $(SIM_DIR)/../rtl/cvfpu/src/fpnew_noncomp.sv $(SIM_DIR)/../rtl/cvfpu/src/fpnew_divsqrt_multi.sv $(SIM_DIR)/../rtl/cvfpu/src/fpnew_divsqrt_th_32.sv $(SIM_DIR)/../rtl/cvfpu/src/fpnew_divsqrt_th_64_multi.sv $(SIM_DIR)/../rtl/cvfpu/src/fpnew_cast_multi.sv $(SIM_DIR)/../rtl/cvfpu/src/fpnew_rounding.sv $(SIM_DIR)/../rtl/cvfpu/src/fpnew_classifier.sv $(SIM_DIR)/../rtl/cvfpu/vendor/opene906/E906_RTL_FACTORY/gen_rtl/clk/rtl/gated_clk_cell.v $(SIM_DIR)/../rtl/cvfpu/vendor/opene906/E906_RTL_FACTORY/gen_rtl/fpu/rtl/pa_fpu_dp.v $(SIM_DIR)/../rtl/cvfpu/vendor/opene906/E906_RTL_FACTORY/gen_rtl/fpu/rtl/pa_fpu_frbus.v $(SIM_DIR)/../rtl/cvfpu/vendor/opene906/E906_RTL_FACTORY/gen_rtl/fpu/rtl/pa_fpu_src_type.v $(SIM_DIR)/../rtl/cvfpu/vendor/opene906/E906_RTL_FACTORY/gen_rtl/fdsu/rtl/pa_fdsu_ctrl.v $(SIM_DIR)/../rtl/cvfpu/vendor/opene906/E906_RTL_FACTORY/gen_rtl/fdsu/rtl/pa_fdsu_ff1.v $(SIM_DIR)/../rtl/cvfpu/vendor/opene906/E906_RTL_FACTORY/gen_rtl/fdsu/rtl/pa_fdsu_pack_single.v $(SIM_DIR)/../rtl/cvfpu/vendor/opene906/E906_RTL_FACTORY/gen_rtl/fdsu/rtl/pa_fdsu_prepare.v $(SIM_DIR)/../rtl/cvfpu/vendor/opene906/E906_RTL_FACTORY/gen_rtl/fdsu/rtl/pa_fdsu_round_single.v $(SIM_DIR)/../rtl/cvfpu/vendor/opene906/E906_RTL_FACTORY/gen_rtl/fdsu/rtl/pa_fdsu_special.v $(SIM_DIR)/../rtl/cvfpu/vendor/opene906/E906_RTL_FACTORY/gen_rtl/fdsu/rtl/pa_fdsu_srt_single.v $(SIM_DIR)/../rtl/cvfpu/vendor/opene906/E906_RTL_FACTORY/gen_rtl/fdsu/rtl/pa_fdsu_top.v";                                             \
+	fp_inc="$$fp_inc -I$(SIM_DIR)/../rtl/cvfpu/src/ -I$(SIM_DIR)/../rtl/cvfpu/src/common_cells/src/ -I$(SIM_DIR)/../rtl/cvfpu/vendor/opene906/E906_RTL_FACTORY/gen_rtl/clk/rtl/"; \
 	if echo "$(CORE_DIR)" | grep -q "ibex"; then                              \
 	    core="-DMAIN_CORE_IBEX";                                              \
     inc="-I$(SIM_DIR)/../rtl/";                                           \
@@ -107,16 +113,16 @@ $(PROJ_DIR)/obj_dir/Vvproc_top.mk: verilator-version-check $(VPROC_CONFIG_PKG) $
 	    echo "ERROR: Only Ibex is supported as main core.";                   \
 	    exit 1;                                                               \
 	fi;                                                                       \
-	verilator --unroll-count 1024 -Wno-WIDTH -Wno-PINMISSING -Wno-UNOPTFLAT   \
+	verilator --unroll-count 256 -Wno-WIDTH -Wno-PINMISSING -Wno-UNOPTFLAT    \
 	    -Wno-UNSIGNED -Wno-IMPLICIT -Wno-LITENDIAN -Wno-CASEINCOMPLETE        \
 	    -Wno-SYMRSVDWORD -Wno-BLKANDNBLK -Wno-BLKSEQ -Wno-SYNCASYNCNET        \
-	    -Wno-LATCH                                                           \
+	    -Wno-LATCH -Wno-SELRANGE -Wno-WIDTHCONCAT                                                           \
 	    -Wno-COMBDLY -Wno-DEPRECATED                                          \
-	    -I$(SIM_DIR)/../rtl/ -I$(SIM_DIR)/../sva/ $$inc $$core                \
+	    -I$(SIM_DIR)/../rtl/ -I$(SIM_DIR)/../sva/ $$inc $$core $$fp_defs $$fp_inc                \
 	    -GMEM_W=$(MEM_W) -GVMEM_W=$(VMEM_W)                                   \
 	    -GICACHE_SZ=$(ICACHE_SZ) -GICACHE_LINE_W=$(ICACHE_LINE_W)             \
 	    -GDCACHE_SZ=$(DCACHE_SZ) -GDCACHE_LINE_W=$(DCACHE_LINE_W)             \
-	    --cc $$src vproc_pkg.sv $(VPROC_CONFIG_PKG) vproc_top.sv              \
+	    --cc $$fp_src $$src vproc_pkg.sv $(VPROC_CONFIG_PKG) vproc_top.sv              \
 	    vproc_vregpack.sv vproc_vregunpack.sv --top-module vproc_top          \
 	    $$options $$cflags --exe verilator_main.cpp
 

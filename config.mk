@@ -28,25 +28,25 @@ ifeq ($(VPROC_CONFIG), compact)
   VPORT_POLICY    ?= some
   VMEM_W          ?= 32
   VREG_W          ?= 128
-  VPROC_PIPELINES ?= $(VMEM_W):VLSU,VALU,VMUL,VSLD,VELEM
+  VPROC_PIPELINES ?= $(VMEM_W):VLSU,VALU,VMUL,VDIV,VFPU,VSLD,VELEM
 else
 ifeq ($(VPROC_CONFIG), dual)
   VPORT_POLICY    ?= some
   VMEM_W          ?= 32
   VREG_W          ?= 128
-  VPROC_PIPELINES ?= $(VMEM_W):VLSU,VALU,VELEM $(VPIPE_W_VMUL):VMUL,VSLD
+  VPROC_PIPELINES ?= $(VMEM_W):VLSU,VALU,VELEM $(VPIPE_W_VMUL):VMUL,VDIV,VFPU,VSLD
 else
 ifeq ($(VPROC_CONFIG), triple)
   VPORT_POLICY    ?= some
   VMEM_W          ?= 32
   VREG_W          ?= 256
-  VPROC_PIPELINES ?= $(VMEM_W):VLSU $(VPIPE_W_DFLT):VALU,VELEM $(VPIPE_W_VMUL):VMUL,VSLD
+  VPROC_PIPELINES ?= $(VMEM_W):VLSU $(VPIPE_W_DFLT):VALU,VELEM $(VPIPE_W_VMUL):VMUL,VDIV,VFPU,VSLD
 else
 ifeq ($(VPROC_CONFIG), legacy)
   VPORT_POLICY    ?= some
   VMEM_W          ?= 32
   VREG_W          ?= 128
-  VPROC_PIPELINES ?= $(VMEM_W):VLSU $(VPIPE_W_DFLT):VALU $(VPIPE_W_VMUL):VMUL                     \
+  VPROC_PIPELINES ?= $(VMEM_W):VLSU $(VPIPE_W_DFLT):VALU $(VPIPE_W_VMUL):VMUL,VDIV,VFPU           \
                                     $(VPIPE_W_DFLT):VSLD 32:VELEM
 else
 $(error Unknown vector coprocessor configuration $(VPROC_CONFIG))
@@ -102,7 +102,7 @@ $(VPROC_CONFIG_PKG):
 	    width=`echo $$pipe | cut -d ":" -f 1`;                                                    \
 	    unit_str=`echo $$pipe | cut -d ":" -f 2 | sed 's/,/, /g'`;                                \
 	    unit_mask=`echo $$pipe | cut -d ":" -f 2 | sed 's/,/ | /g' |                              \
-	               sed "s/V\(LSU\|ALU\|MUL\|SLD\|ELEM\)/(UNIT_CNT'(1) << UNIT_\1)/g"`;            \
+	               sed "s/V\(LSU\|ALU\|MUL\|DIV\|FPU\|SLD\|ELEM\)/(UNIT_CNT'(1) << UNIT_\1)/g"`;            \
 	    vport_cnt=1;                                                                              \
 	    if echo "$$pipe" | grep -q "VMUL" && [ $$(($$width * 4)) -gt "$(VREG_W)" ]; then          \
 	        vport_cnt=2;                                                                          \

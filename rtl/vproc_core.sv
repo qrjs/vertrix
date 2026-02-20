@@ -1,45 +1,29 @@
-// Copyright TU Wien
-// Licensed under the Solderpad Hardware License v2.1, see LICENSE.txt for details
-// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
-
-
 module vproc_core import vproc_pkg::*; #(
-        // Direct coupling interface configuration (must be provided when instantiating this module)
-        parameter int unsigned           INSTR_ID_W               = 0, // width of instruction IDs
-        parameter int unsigned           VMEM_W                   = 0, // memory interface width
-
-        // Vector register file configuration
+        parameter int unsigned           INSTR_ID_W               = 0,
+        parameter int unsigned           VMEM_W                   = 0,
         parameter vreg_type              VREG_TYPE                = vproc_config::VREG_TYPE,
         parameter int unsigned           VREG_W                   = vproc_config::VREG_W,
         parameter int unsigned           VPORT_RD_CNT             = vproc_config::VPORT_RD_CNT,
         parameter int unsigned           VPORT_RD_W[VPORT_RD_CNT] = vproc_config::VPORT_RD_W,
         parameter int unsigned           VPORT_WR_CNT             = vproc_config::VPORT_WR_CNT,
         parameter int unsigned           VPORT_WR_W[VPORT_WR_CNT] = vproc_config::VPORT_WR_W,
-
-        // Vector pipeline configuration
         parameter int unsigned           PIPE_CNT                 = vproc_config::PIPE_CNT,
         parameter bit [UNIT_CNT-1:0]     PIPE_UNITS    [PIPE_CNT] = vproc_config::PIPE_UNITS,
         parameter int unsigned           PIPE_W        [PIPE_CNT] = vproc_config::PIPE_W,
         parameter int unsigned           PIPE_VPORT_CNT[PIPE_CNT] = vproc_config::PIPE_VPORT_CNT,
         parameter int unsigned           PIPE_VPORT_IDX[PIPE_CNT] = vproc_config::PIPE_VPORT_IDX,
         parameter int unsigned           PIPE_VPORT_WR [PIPE_CNT] = vproc_config::PIPE_VPORT_WR,
-
-        // Unit-specific configuration
         parameter int unsigned           VLSU_QUEUE_SZ            = vproc_config::VLSU_QUEUE_SZ,
         parameter bit [VLSU_FLAGS_W-1:0] VLSU_FLAGS               = vproc_config::VLSU_FLAGS,
         parameter mul_type               MUL_TYPE                 = vproc_config::MUL_TYPE,
-
-        // Miscellaneous configuration
         parameter int unsigned           INSTR_QUEUE_SZ           = vproc_config::INSTR_QUEUE_SZ,
         parameter bit [BUF_FLAGS_W-1:0]  BUF_FLAGS                = vproc_config::BUF_FLAGS,
-
-        parameter bit                    DONT_CARE_ZERO           = 1'b0, // init don't cares to 0
-        parameter bit                    ASYNC_RESET              = 1'b0  // rst_ni is async
+        parameter bit                    DONT_CARE_ZERO           = 1'b0,
+        parameter bit                    ASYNC_RESET              = 1'b0
     )(
         input  logic                     clk_i,
         input  logic                     rst_ni,
 
-        // Issue interface
         input  logic                     issue_valid_i,
         output logic                     issue_ready_o,
         input  logic [31:0]              issue_instr_i,
@@ -55,12 +39,10 @@ module vproc_core import vproc_pkg::*; #(
         output logic                     issue_loadstore_o,
         output logic                     issue_exc_o,
 
-        // Commit interface
         input  logic                     commit_valid_i,
         input  logic [INSTR_ID_W-1:0]    commit_id_i,
         input  logic                     commit_kill_i,
 
-        // VLSU memory interface
         output logic                     vlsu_mem_valid_o,
         input  logic                     vlsu_mem_ready_i,
         output logic [INSTR_ID_W-1:0]    vlsu_mem_id_o,
@@ -77,7 +59,6 @@ module vproc_core import vproc_pkg::*; #(
         input  logic [VMEM_W-1:0]        vlsu_mem_result_rdata_i,
         input  logic                     vlsu_mem_result_err_i,
 
-        // Result interface
         output logic                     result_valid_o,
         input  logic                     result_ready_i,
         output logic [INSTR_ID_W-1:0]    result_id_o,
@@ -92,7 +73,6 @@ module vproc_core import vproc_pkg::*; #(
         output logic                     pending_load_o,
         output logic                     pending_store_o,
 
-        // CSR connections
         output logic [31:0]              csr_vtype_o,
         output logic [31:0]              csr_vl_o,
         output logic [31:0]              csr_vlenb_o,
@@ -106,8 +86,21 @@ module vproc_core import vproc_pkg::*; #(
         output logic                     csr_vxsat_o,
         output logic                     csr_vxsat_set_o,
 
+    `ifdef RISCV_ZVE32F
+        output logic                     fpr_wr_req_valid_o,
+        output logic [4:0]               fpr_wr_req_addr_o,
+        output logic                     fpr_res_valid_o,
+        input  fpnew_pkg::roundmode_e    float_round_mode_i,
+        input  logic                     fpu_res_acc_i,
+        input  logic [INSTR_ID_W-1:0]    fpu_res_id_i,
+    `endif
+
         output logic [31:0]              pend_vreg_wr_map_o
     );
+
+    localparam int unsigned XIF_ID_W   = INSTR_ID_W;
+    localparam int unsigned XIF_MEM_W  = VMEM_W;
+    localparam int unsigned XIF_ID_CNT = 1 << XIF_ID_W;
 
     if ((VREG_W & (VREG_W - 1)) != 0 || VREG_W < 64) begin
         $fatal(1, "The vector register width VREG_W must be at least 64 and a power of two.  ",
@@ -120,51 +113,22 @@ module vproc_core import vproc_pkg::*; #(
                 $fatal(1, "Vector register read port %d is %d bits wide, ", i, VPORT_RD_W[i],
                           "but a power of two between 32 and %d is required.", VREG_W);
             end
-            if (VPORT_RD_W[i] > VREG_W) begin
-                $fatal(1, "Vector register read port %d is %d bits wide, ", i, VPORT_RD_W[i],
-                          "exceeds vector register width of %d bits.", VREG_W);
-            end
         end
         for (genvar i = 0; i < VPORT_WR_CNT; i++) begin
             if ((VPORT_WR_W[i] & (VPORT_WR_W[i] - 1)) != 0 || VPORT_WR_W[i] < 32) begin
                 $fatal(1, "Vector register write port %d is %d bits wide, ", i, VPORT_WR_W[i],
                           "but a power of two between 32 and %d is required.", VREG_W);
             end
-            if (VPORT_WR_W[i] > VREG_W) begin
-                $fatal(1, "Vector register write port %d is %d bits wide, ", i, VPORT_WR_W[i],
-                          "exceeds vector register width of %d bits.", VREG_W);
-            end
         end
     endgenerate
 
     generate
         for (genvar i = 0; i < PIPE_CNT; i++) begin
-            if (PIPE_UNITS[i][UNIT_LSU] & (PIPE_W[i] != VMEM_W)) begin
+            if (PIPE_UNITS[i][UNIT_LSU] & (PIPE_W[i] != XIF_MEM_W)) begin
                 $fatal(1, "The vector pipeline containing the VLSU must have a datapath width ",
                           "equal to the memory interface width.  However, pipeline %d ", i,
                           "containing the VLSU has a width of %d bits ", PIPE_W[i],
-                          "while the memory interface is %d bits wide.", VMEM_W);
-            end
-            if ((PIPE_VPORT_IDX[i] >= VPORT_RD_CNT) |
-                (PIPE_VPORT_IDX[i] + PIPE_VPORT_CNT[i] > VPORT_RD_CNT)
-            ) begin
-                $fatal(1, "Vector pipeline %d uses vector register read port %d through %d, ", i,
-                          PIPE_VPORT_IDX[i], PIPE_VPORT_IDX[i] + PIPE_VPORT_CNT[i] - 1,
-                          "but the valid range is 0 through %d.", VPORT_RD_CNT - 1);
-            end
-            for (genvar j = i + 1; j < PIPE_CNT; j++) begin
-                if (((PIPE_VPORT_IDX[i] < PIPE_VPORT_IDX[j]) &
-                    (PIPE_VPORT_IDX[i] + PIPE_VPORT_CNT[i] > PIPE_VPORT_IDX[j])) |
-                    ((PIPE_VPORT_IDX[i] >= PIPE_VPORT_IDX[j]) &
-                    (PIPE_VPORT_IDX[j] + PIPE_VPORT_CNT[j] > PIPE_VPORT_IDX[i]))
-                ) begin
-                    $fatal(1, "Vector register read ports of vector pipeline %d overlap ", i,
-                              "with the vector register read ports of vector pipeline %d ", j,
-                              "(pipeline %d uses ports %d through %d ", i,
-                              PIPE_VPORT_IDX[i], PIPE_VPORT_IDX[i] + PIPE_VPORT_CNT[i] - 1,
-                              "and pipeline %d uses ports %d through %d).", j,
-                              PIPE_VPORT_IDX[j], PIPE_VPORT_IDX[j] + PIPE_VPORT_CNT[j] - 1);
-                end
+                          "while the memory interface is %d bits wide.", XIF_MEM_W);
             end
         end
     endgenerate
@@ -213,38 +177,29 @@ module vproc_core import vproc_pkg::*; #(
     localparam int unsigned MAX_VPORT_W    = (MAX_VPORT_RD_W > MAX_VPORT_WR_W) ? MAX_VPORT_RD_W : MAX_VPORT_WR_W;
     localparam int unsigned MAX_VADDR_W    = (MAX_VADDR_RD_W > MAX_VPORT_WR_W) ? MAX_VADDR_RD_W : MAX_VADDR_WR_W;
 
-    // The current vector length (VL) actually counts bytes instead of elements.
-    // Also, the vector lenght is actually one more element than what VL suggests;
-    // hence, when VSEW = 8, the value in VL is the current length - 1,
-    // when VSEW = 16 the actual vector length is VL / 2 + 1 and when VSEW = 32
-    // the actual vector lenght is VL / 4 + 1. Due to this
-    // encoding the top 3 bits of VL are only used when LMUL > 1.
-    localparam int unsigned CFG_VL_W = $clog2(VREG_W); // width of the vl config register
-
-    // Total count of instruction IDs used by the extension interface
+    localparam int unsigned CFG_VL_W = $clog2(VREG_W);
     localparam int unsigned INSTR_ID_CNT = 1 << INSTR_ID_W;
 
-    // define asynchronous and synchronous reset signals
     logic async_rst_n, sync_rst_n;
     assign async_rst_n = ASYNC_RESET ? rst_ni : 1'b1  ;
     assign sync_rst_n  = ASYNC_RESET ? 1'b1   : rst_ni;
 
 
-    ///////////////////////////////////////////////////////////////////////////
-    // CONFIGURATION STATE AND CSR READ AND WRITES
-    // Note: CSRs are now stored in unified CSR file (ibex_cs_registers),
-    //       but we keep internal copies for configuration state
 
-    cfg_vsew             vsew_q,     vsew_d;     // VSEW (single element width)
-    cfg_lmul             lmul_q,     lmul_d;     // LMUL
-    logic [1:0]          agnostic_q, agnostic_d; // agnostic policy (vta & vma)
-    logic                vl_0_q,     vl_0_d;     // set if VL == 0
-    logic [CFG_VL_W-1:0] vl_q,       vl_d;       // VL * (VSEW / 8) - 1
-    logic [CFG_VL_W  :0] vl_csr_q,   vl_csr_d;   // VL (intentionally CFG_VL_W+1 wide)
-    // vstart, vxrm and vxsat are now only stored in external unified CSR, not internally
-    logic [CFG_VL_W-1:0] vstart_q;               // vector start index (from external CSR, combinational)
-    cfg_vxrm             vxrm_q;                 // fixed-point rounding mode (from external CSR, combinational)
-    logic                vxsat_q;                // fixed-point saturation flag (from external CSR, combinational)
+
+    ///////////////////////////////////////////////////////////////////////////
+    // CONFIGURATION STATE
+
+    cfg_vsew             vsew_q,     vsew_d;
+    cfg_lmul             lmul_q,     lmul_d;
+    logic [1:0]          agnostic_q, agnostic_d;
+    logic                vl_0_q,     vl_0_d;
+    logic [CFG_VL_W-1:0] vl_q,       vl_d;
+    logic [CFG_VL_W  :0] vl_csr_q,   vl_csr_d;
+    logic [CFG_VL_W-1:0] vstart_q;
+    cfg_vxrm             vxrm_q;
+    logic                vxsat_q;
+
     always_ff @(posedge clk_i or negedge async_rst_n) begin : vproc_cfg_reg
         if (~async_rst_n) begin
             vsew_q     <= VSEW_INVALID;
@@ -270,29 +225,17 @@ module vproc_core import vproc_pkg::*; #(
             vl_csr_q   <= vl_csr_d;
         end
     end
-    
-    // vstart, vxrm and vxsat are read directly from external unified CSR
+
     assign vstart_q = csr_vstart_i[CFG_VL_W-1:0];
     assign vxrm_q   = cfg_vxrm'(csr_vxrm_i);
     assign vxsat_q  = csr_vxsat_i;
+
     logic cfg_valid;
     assign cfg_valid = vsew_q != VSEW_INVALID;
 
-    // CSR reads - output to unified CSR file (all 32-bit)
-    // vtype: 32-bit register with fields packed
     assign csr_vtype_o  = cfg_valid ? {24'b0, agnostic_q, 1'b0, vsew_q, lmul_q} : 32'h80000000;
-    // vl: 32-bit register, effective width determined by CFG_VL_W
     assign csr_vl_o     = cfg_valid ? {{(32-CFG_VL_W-1){1'b0}}, vl_csr_q} : '0;
-    // vlenb: 32-bit constant
     assign csr_vlenb_o  = 32'(VREG_W / 8);
-    // vstart, vxrm and vxsat write signals to external CSR
-    // These are driven by CSR write instructions in the combinational logic
-    assign csr_vstart_o    = {{(32-CFG_VL_W){1'b0}}, vstart_next};
-    assign csr_vstart_set_o = vstart_wr;
-    assign csr_vxrm_o       = vxrm_next;
-    assign csr_vxrm_set_o   = vxrm_wr;
-    assign csr_vxsat_o      = vxsat_next;
-    assign csr_vxsat_set_o  = vxsat_wr;
 
 
     ///////////////////////////////////////////////////////////////////////////
@@ -315,7 +258,6 @@ module vproc_core import vproc_pkg::*; #(
         logic                pend_store;
     } decoder_data;
 
-    // signals for decoder and for decoder buffer
     logic        dec_ready,       dec_valid,       dec_clear;
     logic        dec_buf_valid_q, dec_buf_valid_d;
     decoder_data dec_data_q,      dec_data_d;
@@ -336,20 +278,20 @@ module vproc_core import vproc_pkg::*; #(
     end
     assign dec_buf_valid_d = (~dec_ready | dec_valid) & ~dec_clear;
 
-    // Check if scalar source operands are valid
     logic source_xreg_valid;
     assign source_xreg_valid = (!dec_data_d.rs1.xreg | issue_rs_valid_i[0]) & (!dec_data_d.rs2.xreg | issue_rs_valid_i[1]);
 
-    // Stall instruction offloading in case the instruction ID is already used
-    // by another instruction which is not complete
     logic instr_valid, issue_id_used;
     assign instr_valid = issue_valid_i & ~issue_id_used & source_xreg_valid;
+
+    logic dec_vl_override;
 
     op_unit instr_unit;
     op_mode instr_mode;
     vproc_decoder #(
+        .VREG_W             ( VREG_W                              ),
         .CFG_VL_W           ( CFG_VL_W                            ),
-        .VMEM_W            ( VMEM_W                               ),
+        .XIF_MEM_W          ( XIF_MEM_W                           ),
         .ALIGNED_UNITSTRIDE ( VLSU_FLAGS[VLSU_ALIGNED_UNITSTRIDE] ),
         .DONT_CARE_ZERO     ( DONT_CARE_ZERO                      )
     ) dec (
@@ -361,6 +303,11 @@ module vproc_core import vproc_pkg::*; #(
         .lmul_i             ( lmul_q                              ),
         .vxrm_i             ( vxrm_q                              ),
         .vl_i               ( vl_q                                ),
+    `ifdef RISCV_ZVE32F
+        .fpr_wr_req_valid   ( fpr_wr_req_valid_o                  ),
+        .fpr_wr_req_addr_o  ( fpr_wr_req_addr_o                   ),
+        .float_round_mode_i ( float_round_mode_i                  ),
+    `endif
         .valid_o            ( dec_valid                           ),
         .vsew_o             ( dec_data_d.vsew                     ),
         .emul_o             ( dec_data_d.emul                     ),
@@ -371,22 +318,17 @@ module vproc_core import vproc_pkg::*; #(
         .widenarrow_o       ( dec_data_d.widenarrow               ),
         .rs1_o              ( dec_data_d.rs1                      ),
         .rs2_o              ( dec_data_d.rs2                      ),
-        .rd_o               ( dec_data_d.rd                       )
+        .rd_o               ( dec_data_d.rd                       ),
+        .vl_override_o      ( dec_vl_override                     )
     );
     assign dec_data_d.id         = issue_id_i;
-    assign dec_data_d.vl_0       = vl_0_q;
+    assign dec_data_d.vl_0       = vl_0_q & ~dec_vl_override;
     assign dec_data_d.unit       = instr_unit;
     assign dec_data_d.mode       = instr_mode;
     assign dec_data_d.pend_load  = (instr_unit == UNIT_LSU) & ~instr_mode.lsu.store;
     assign dec_data_d.pend_store = (instr_unit == UNIT_LSU) &  instr_mode.lsu.store;
 
-    // Note: The decoder is not ready if the decode buffer is not ready, even
-    // if an offloaded instruction is illegal.  The decode buffer could hold a
-    // vset[i]vl[i] instruction that will change the configuration in the next
-    // cycle and any subsequent offloaded instruction must be validated w.r.t.
-    // the new configuration.
-    assign issue_ready_o          = dec_ready & ~issue_id_used & source_xreg_valid;
-
+    assign issue_ready_o     = dec_ready & ~issue_id_used & source_xreg_valid;
     assign issue_accept_o    = dec_valid;
     assign issue_writeback_o = dec_valid & (((instr_unit == UNIT_ELEM) & instr_mode.elem.xreg) | (instr_unit == UNIT_CFG));
     assign issue_dualwrite_o = '0;
@@ -398,21 +340,8 @@ module vproc_core import vproc_pkg::*; #(
     ///////////////////////////////////////////////////////////////////////////
     // VECTOR INSTRUCTION COMMIT STATE
 
-    // The instruction state tracks whether a vector instruction is invalid,
-    // speculative, committed, or killed.  First, any instruction ID is
-    // invalid, which indicates that no instruction with that ID has been
-    // offloaded yet.  Once an instruction has been accepted, it becomes
-    // speculative until there is a corresponding commit transaction.  The
-    // commit transaction changes the instruction's state to either committed
-    // or killed, depending on the corresponding bit in the commit transaction.
-    // The instruction remains in that state until it is complete.  Note that
-    // an instruction may be incomplete despite having been retired (by
-    // providing a result to the host CPU via the result interface).
-    // Hence, the host CPU might attempt to reuse the ID of an incomplete
-    // instruction.  To avoid this, the decoder stalls in case the instruction
-    // ID of a new instruction is still valid.
-    instr_state [INSTR_ID_CNT-1:0] instr_state_q,     instr_state_d;     // instruction state
-    logic       [INSTR_ID_CNT-1:0] instr_empty_res_q, instr_empty_res_d; // empty result mask
+    instr_state [INSTR_ID_CNT-1:0] instr_state_q,     instr_state_d;
+    logic       [INSTR_ID_CNT-1:0] instr_empty_res_q, instr_empty_res_d;
     always_ff @(posedge clk_i or negedge async_rst_n) begin : vproc_commit_buf
         if (~async_rst_n) begin
             instr_state_q    <= '{default: INSTR_INVALID};
@@ -429,28 +358,21 @@ module vproc_core import vproc_pkg::*; #(
 
     assign issue_id_used = instr_state_q[issue_id_i] != INSTR_INVALID;
 
-    // Instruction complete signal for each pipeline
-    logic [PIPE_CNT-1:0]               instr_complete_valid;
-    logic [PIPE_CNT-1:0][INSTR_ID_W-1:0] instr_complete_id;
+    logic [PIPE_CNT-1:0]                  instr_complete_valid;
+    logic [PIPE_CNT-1:0][INSTR_ID_W-1:0]  instr_complete_id;
 
-    // return an empty result or VL as result
-    logic                result_empty_valid, result_csr_valid;
-    logic                                    result_csr_ready;
+    logic                  result_empty_valid, result_csr_valid;
+    logic                                      result_csr_ready;
     logic [INSTR_ID_W-1:0] result_empty_id,    result_csr_id;
-    logic [4:0]                              result_csr_addr;
-    logic                                    result_csr_delayed;
-    logic [31:0]                             result_csr_data;
+    logic [4:0]                                result_csr_addr;
+    logic                                      result_csr_delayed;
+    logic [31:0]                               result_csr_data;
 
-    logic queue_ready, queue_push; // instruction queue ready and push signals (enqueue handshake)
+    logic queue_ready, queue_push;
     assign queue_push = dec_buf_valid_q & (dec_data_q.unit != UNIT_CFG);
 
-    // decode buffer is vacated either by enqueueing an instruction or for
-    // vset[i]vl[i] once the instruction has been committed; for vset[i]vl[i]
-    // it will take an additional cycle until the CSR values are updated, hence
-    // the decode buffer is cleared without asserting dec_ready
     assign dec_ready = ~dec_buf_valid_q | (queue_ready & queue_push);
 
-    // Instruction successfully offloaded
     logic instr_offload;
     assign instr_offload = issue_valid_i & issue_ready_o & issue_accept_o;
 
@@ -465,33 +387,19 @@ module vproc_core import vproc_pkg::*; #(
         dec_clear          = 1'b0;
 
         if (instr_offload) begin
-            // For each issued instruction, remember whether it will produce an
-            // empty result or not. This must be done for accepted as well as
-            // rejected instructions, since the main core will commit all of
-            // them and rejected instructions must not produce a result.
             instr_state_d    [issue_id_i] = INSTR_SPECULATIVE;
             instr_empty_res_d[issue_id_i] = ~issue_writeback_o & ~issue_loadstore_o;
         end
-        // Only instructions that have already been offloaded or are being offloaded right now
-        // can be committed.  Commit transactions for invalid IDs are ignored.
+
+        if (commit_valid_i & (instr_state_q[commit_id_i] != INSTR_INVALID)) begin
+            result_empty_valid = instr_empty_res_q[commit_id_i];
+        end
+
         if (commit_valid_i & (
             (instr_offload & (issue_id_i == commit_id_i)) |
             (instr_state_q[commit_id_i] != INSTR_INVALID)
         )) begin
-            // Generate an empty result for all instructions except those that
-            // writeback to the main core and for vector loads and stores
-            if (~commit_kill_i) begin
-                if (dec_valid & (issue_id_i == commit_id_i)) begin
-                    result_empty_valid = ~issue_writeback_o & ~issue_loadstore_o;
-                end else begin
-                    result_empty_valid = instr_empty_res_q[commit_id_i];
-                end
-            end
-
             if (dec_buf_valid_q & (dec_data_q.unit == UNIT_CFG) & (dec_data_q.id == commit_id_i)) begin
-                // Configuration instructions are not enqueued.  The instruction
-                // is retired and the result returned as soon as it is
-                // committed.
                 result_csr_valid = ~commit_kill_i;
                 if (result_csr_ready | commit_kill_i) begin
                     dec_clear                    = 1'b1;
@@ -509,9 +417,6 @@ module vproc_core import vproc_pkg::*; #(
             (instr_state_q[dec_data_q.id] == INSTR_COMMITTED) |
             (instr_state_q[dec_data_q.id] == INSTR_KILLED   )
         )) begin
-            // Execute a configuration instruction that has already been
-            // committed earlier (e.g., while decoding and accepting the
-            // instruction).
             result_csr_valid = instr_state_q[dec_data_q.id] == INSTR_COMMITTED;
             if (result_csr_ready | (instr_state_q[dec_data_q.id] == INSTR_KILLED)) begin
                 dec_clear                    = 1'b1;
@@ -529,8 +434,7 @@ module vproc_core import vproc_pkg::*; #(
     ///////////////////////////////////////////////////////////////////////////
     // VSET[I]VL[I] CONFIGURATION UPDATE LOGIC
 
-    // temporary variables for calculating new vector length for vset[i]vl[i]
-    logic [33:0] cfg_avl;   // AVL * (VSEW / 8) - 1
+    logic [33:0] cfg_avl;
     always_comb begin
         cfg_avl = DONT_CARE_ZERO ? '0 : 'x;
         unique case (dec_data_q.mode.cfg.vsew)
@@ -541,11 +445,10 @@ module vproc_core import vproc_pkg::*; #(
         endcase
     end
 
-    // CSR read/write logic
     logic [CFG_VL_W-1:0] vstart_next;
     logic [1:0]          vxrm_next;
     logic                vxsat_next;
-    logic                vstart_wr, vxrm_wr, vxsat_wr;  // Write enable signals for external CSR
+    logic                vstart_wr, vxrm_wr, vxsat_wr;
     always_comb begin
         vsew_d      = vsew_q;
         lmul_d      = lmul_q;
@@ -563,9 +466,8 @@ module vproc_core import vproc_pkg::*; #(
         result_csr_delayed = DONT_CARE_ZERO ? '0 : 'x;
         result_csr_data    = DONT_CARE_ZERO ? '0 : 'x;
 
-        // regular CSR register read/write
         if (result_csr_valid) begin
-            result_csr_delayed = 1'b0; // result is the current (old) value for regular CSR reads
+            result_csr_delayed = 1'b0;
             unique case (dec_data_q.mode.cfg.csr_op)
                 CFG_VTYPE_READ:   result_csr_data = csr_vtype_o;
                 CFG_VL_READ:      result_csr_data = csr_vl_o;
@@ -584,155 +486,66 @@ module vproc_core import vproc_pkg::*; #(
                 CFG_VCSR_CLEAR:   result_csr_data = {29'b0, vxrm_q, vxsat_q};
                 default: ;
             endcase
-            // update read/write CSR
             unique case (dec_data_q.mode.cfg.csr_op)
-                CFG_VSTART_WRITE: begin
-                    vstart_next =  dec_data_q.rs1.r.xval[CFG_VL_W-1:0];
-                    vstart_wr   = 1'b1;
-                end
-                CFG_VSTART_SET: begin
-                    vstart_next = vstart_q |  dec_data_q.rs1.r.xval[CFG_VL_W-1:0];
-                    vstart_wr   = 1'b1;
-                end
-                CFG_VSTART_CLEAR: begin
-                    vstart_next = vstart_q & ~dec_data_q.rs1.r.xval[CFG_VL_W-1:0];
-                    vstart_wr   = 1'b1;
-                end
-                CFG_VXSAT_WRITE: begin
-                    vxsat_next =  dec_data_q.rs1.r.xval[0:0];
-                    vxsat_wr   = 1'b1;
-                end
-                CFG_VXSAT_SET: begin
-                    vxsat_next = vxsat_q |  dec_data_q.rs1.r.xval[0:0];
-                    vxsat_wr   = 1'b1;
-                end
-                CFG_VXSAT_CLEAR: begin
-                    vxsat_next = vxsat_q & ~dec_data_q.rs1.r.xval[0:0];
-                    vxsat_wr   = 1'b1;
-                end
-                CFG_VXRM_WRITE: begin
-                    vxrm_next =  dec_data_q.rs1.r.xval[1:0];
-                    vxrm_wr   = 1'b1;
-                end
-                CFG_VXRM_SET: begin
-                    vxrm_next = vxrm_q |  dec_data_q.rs1.r.xval[1:0];
-                    vxrm_wr   = 1'b1;
-                end
-                CFG_VXRM_CLEAR: begin
-                    vxrm_next = vxrm_q & ~dec_data_q.rs1.r.xval[1:0];
-                    vxrm_wr   = 1'b1;
-                end
-                CFG_VCSR_WRITE: begin
-                    {vxrm_next, vxsat_next} =  dec_data_q.rs1.r.xval[2:0];
-                    vxrm_wr  = 1'b1;
-                    vxsat_wr = 1'b1;
-                end
-                CFG_VCSR_SET: begin
-                    {vxrm_next, vxsat_next} = {vxrm_q, vxsat_q} |  dec_data_q.rs1.r.xval[2:0];
-                    vxrm_wr  = 1'b1;
-                    vxsat_wr = 1'b1;
-                end
-                CFG_VCSR_CLEAR: begin
-                    {vxrm_next, vxsat_next} = {vxrm_q, vxsat_q} & ~dec_data_q.rs1.r.xval[2:0];
-                    vxrm_wr  = 1'b1;
-                    vxsat_wr = 1'b1;
-                end
+                CFG_VSTART_WRITE: begin vstart_next =  dec_data_q.rs1.r.xval[CFG_VL_W-1:0]; vstart_wr = 1'b1; end
+                CFG_VSTART_SET:   begin vstart_next = vstart_q |  dec_data_q.rs1.r.xval[CFG_VL_W-1:0]; vstart_wr = 1'b1; end
+                CFG_VSTART_CLEAR: begin vstart_next = vstart_q & ~dec_data_q.rs1.r.xval[CFG_VL_W-1:0]; vstart_wr = 1'b1; end
+                CFG_VXSAT_WRITE:  begin vxsat_next  =  dec_data_q.rs1.r.xval[0:0]; vxsat_wr = 1'b1; end
+                CFG_VXSAT_SET:    begin vxsat_next  = vxsat_q |  dec_data_q.rs1.r.xval[0:0]; vxsat_wr = 1'b1; end
+                CFG_VXSAT_CLEAR:  begin vxsat_next  = vxsat_q & ~dec_data_q.rs1.r.xval[0:0]; vxsat_wr = 1'b1; end
+                CFG_VXRM_WRITE:   begin vxrm_next   =  dec_data_q.rs1.r.xval[1:0]; vxrm_wr = 1'b1; end
+                CFG_VXRM_SET:     begin vxrm_next   = vxrm_q |  dec_data_q.rs1.r.xval[1:0]; vxrm_wr = 1'b1; end
+                CFG_VXRM_CLEAR:   begin vxrm_next   = vxrm_q & ~dec_data_q.rs1.r.xval[1:0]; vxrm_wr = 1'b1; end
+                CFG_VCSR_WRITE:   begin {vxrm_next, vxsat_next} =  dec_data_q.rs1.r.xval[2:0]; vxrm_wr = 1'b1; vxsat_wr = 1'b1; end
+                CFG_VCSR_SET:     begin {vxrm_next, vxsat_next} = {vxrm_q, vxsat_q} |  dec_data_q.rs1.r.xval[2:0]; vxrm_wr = 1'b1; vxsat_wr = 1'b1; end
+                CFG_VCSR_CLEAR:   begin {vxrm_next, vxsat_next} = {vxrm_q, vxsat_q} & ~dec_data_q.rs1.r.xval[2:0]; vxrm_wr = 1'b1; vxsat_wr = 1'b1; end
                 default: ;
             endcase
         end
 
-        // update configuration state for vset[i]vl[i] instructions
         if (result_csr_valid & (dec_data_q.mode.cfg.csr_op == CFG_VSETVL)) begin
             vsew_d             = dec_data_q.mode.cfg.vsew;
             lmul_d             = dec_data_q.mode.cfg.lmul;
             agnostic_d         = dec_data_q.mode.cfg.agnostic;
-            result_csr_delayed = 1'b1; // result is the updated value, hence delayed by one cycle
+            result_csr_delayed = 1'b1;
             if (dec_data_q.mode.cfg.keep_vl) begin
-                // Change VSEW and LMUL while keeping the current VL. Note that the spec states:
-                // > This form can only be used when VLMAX and hence vl is not actually changed by
-                // > the new SEW/LMUL ratio. Use of the instruction with a new SEW/LMUL ratio that
-                // > would result in a change of VLMAX is reserved. Implementations may set vill in
-                // > this case.
-                // Despite keeping the same VL, the `vl_q` register is a byte count and needs to be
-                // updated. Changes to the current SEW/LMUL ratio result set VSEW to VSEW_INVALID.
                 vl_d = DONT_CARE_ZERO ? '0 : 'x;
                 unique case ({vsew_q, dec_data_q.mode.cfg.vsew})
-                    // VSEW scaled by 4
                     {VSEW_8 , VSEW_32}: begin
-                        vl_d = {vl_q[CFG_VL_W-3:0], 2'b11}; // vl_d = (vl_q + 1) * 4 - 1
+                        vl_d = {vl_q[CFG_VL_W-3:0], 2'b11};
                         unique case ({lmul_q, dec_data_q.mode.cfg.lmul})
-                            {LMUL_F8, LMUL_F2},
-                            {LMUL_F4, LMUL_1 },
-                            {LMUL_F2, LMUL_2 },
-                            {LMUL_1 , LMUL_4 },
-                            {LMUL_2 , LMUL_8 }: ;
+                            {LMUL_F8, LMUL_F2},{LMUL_F4, LMUL_1},{LMUL_F2, LMUL_2},{LMUL_1, LMUL_4},{LMUL_2, LMUL_8}: ;
                             default: vsew_d = VSEW_INVALID;
                         endcase
                     end
-                    // VSEW scaled by 2
-                    {VSEW_8 , VSEW_16},
-                    {VSEW_16, VSEW_32}: begin
-                        vl_d = {vl_q[CFG_VL_W-2:0], 1'b1}; // vl_d = (vl_q + 1) * 2 - 1
+                    {VSEW_8 , VSEW_16},{VSEW_16, VSEW_32}: begin
+                        vl_d = {vl_q[CFG_VL_W-2:0], 1'b1};
                         unique case ({lmul_q, dec_data_q.mode.cfg.lmul})
-                            {LMUL_F8, LMUL_F4},
-                            {LMUL_F4, LMUL_F2},
-                            {LMUL_F2, LMUL_1 },
-                            {LMUL_1 , LMUL_2 },
-                            {LMUL_2 , LMUL_4 },
-                            {LMUL_4 , LMUL_8 }: ;
+                            {LMUL_F8, LMUL_F4},{LMUL_F4, LMUL_F2},{LMUL_F2, LMUL_1},{LMUL_1, LMUL_2},{LMUL_2, LMUL_4},{LMUL_4, LMUL_8}: ;
                             default: vsew_d = VSEW_INVALID;
                         endcase
                     end
-                    // VSEW scaled by 1
-                    {VSEW_8 , VSEW_8 },
-                    {VSEW_16, VSEW_16},
-                    {VSEW_32, VSEW_32}: begin
+                    {VSEW_8 , VSEW_8},{VSEW_16, VSEW_16},{VSEW_32, VSEW_32}: begin
                         vl_d = vl_q;
-                        if (lmul_q != dec_data_q.mode.cfg.lmul) begin
-                            vsew_d = VSEW_INVALID;
-                        end
+                        if (lmul_q != dec_data_q.mode.cfg.lmul) vsew_d = VSEW_INVALID;
                     end
-                    // VSEW scaled by 1/2
-                    {VSEW_16, VSEW_8 },
-                    {VSEW_32, VSEW_16}: begin
-                        vl_d = {1'b0, vl_q[CFG_VL_W-1:1]}; // vl_d = vl_q / 2
+                    {VSEW_16, VSEW_8},{VSEW_32, VSEW_16}: begin
+                        vl_d = {1'b0, vl_q[CFG_VL_W-1:1]};
                         unique case ({lmul_q, dec_data_q.mode.cfg.lmul})
-                            {LMUL_F4, LMUL_F8},
-                            {LMUL_F2, LMUL_F4},
-                            {LMUL_1 , LMUL_F2},
-                            {LMUL_2 , LMUL_1 },
-                            {LMUL_4 , LMUL_2 },
-                            {LMUL_8 , LMUL_4 }: ;
+                            {LMUL_F4, LMUL_F8},{LMUL_F2, LMUL_F4},{LMUL_1, LMUL_F2},{LMUL_2, LMUL_1},{LMUL_4, LMUL_2},{LMUL_8, LMUL_4}: ;
                             default: vsew_d = VSEW_INVALID;
                         endcase
                     end
-                    // VSEW scaled by 1/4
-                    {VSEW_32, VSEW_8 }: begin
-                        vl_d = {2'b00, vl_q[CFG_VL_W-1:2]}; // vl_d = vl_q / 4
+                    {VSEW_32, VSEW_8}: begin
+                        vl_d = {2'b00, vl_q[CFG_VL_W-1:2]};
                         unique case ({lmul_q, dec_data_q.mode.cfg.lmul})
-                            {LMUL_F2, LMUL_F8},
-                            {LMUL_1 , LMUL_F4},
-                            {LMUL_2 , LMUL_F2},
-                            {LMUL_4 , LMUL_1 },
-                            {LMUL_8 , LMUL_2 }: ;
+                            {LMUL_F2, LMUL_F8},{LMUL_1, LMUL_F4},{LMUL_2, LMUL_F2},{LMUL_4, LMUL_1},{LMUL_8, LMUL_2}: ;
                             default: vsew_d = VSEW_INVALID;
                         endcase
                     end
                     default: ;
                 endcase
             end else begin
-                // Vicuna supports all integer LMUL settings combined with any legal SEW setting.
-                // Fractional LMUL support covers the minimum requirements of the V specification:
-                // > Implementations must provide fractional LMUL settings [...] to support
-                // > LMUL ≥ SEWMIN/ELEN, where SEWMIN is the narrowest supported SEW value and ELEN
-                // > is the widest supported SEW value.
-                // The minimum SEW is 8 and ELEN is 32, hence Vicuna supports LMULs of 1/2 and 1/4.
-                // However, the fractional LMUL cannot be combined with any SEW. The spec states:
-                // > For a given supported fractional LMUL setting, implementations must support
-                // > SEW settings between SEWMIN and LMUL * ELEN, inclusive.
-                // LMUL 1/4 is only compatible with a SEW of 8 and LMUL 1/2 with a SEW of 8 and 16.
-                // Attempts to use an illegal combination sets the `vill` bit in `vtype` (by
-                // overwriting the VSEW setting with VSEW_INVALID.
                 vl_0_d = 1'b0;
                 vl_d   = DONT_CARE_ZERO ? '0 : 'x;
                 unique case (dec_data_q.mode.cfg.lmul)
@@ -746,21 +559,12 @@ module vproc_core import vproc_pkg::*; #(
                 endcase
                 vl_csr_d = DONT_CARE_ZERO ? '0 : 'x;
                 unique case ({dec_data_q.mode.cfg.lmul, dec_data_q.mode.cfg.vsew})
-                    {LMUL_F4, VSEW_8 },
-                    {LMUL_F2, VSEW_16},
-                    {LMUL_1 , VSEW_32}: vl_csr_d = ((dec_data_q.rs1.r.xval[31:CFG_VL_W-5] == '0) & ~dec_data_q.mode.cfg.vlmax) ? dec_data_q.rs1.r.xval[CFG_VL_W:0] : {6'b1, {(CFG_VL_W-5){1'b0}}};
-                    {LMUL_F2, VSEW_8 },
-                    {LMUL_1 , VSEW_16},
-                    {LMUL_2 , VSEW_32}: vl_csr_d = ((dec_data_q.rs1.r.xval[31:CFG_VL_W-4] == '0) & ~dec_data_q.mode.cfg.vlmax) ? dec_data_q.rs1.r.xval[CFG_VL_W:0] : {5'b1, {(CFG_VL_W-4){1'b0}}};
-                    {LMUL_1 , VSEW_8 },
-                    {LMUL_2 , VSEW_16},
-                    {LMUL_4 , VSEW_32}: vl_csr_d = ((dec_data_q.rs1.r.xval[31:CFG_VL_W-3] == '0) & ~dec_data_q.mode.cfg.vlmax) ? dec_data_q.rs1.r.xval[CFG_VL_W:0] : {4'b1, {(CFG_VL_W-3){1'b0}}};
-                    {LMUL_2 , VSEW_8 },
-                    {LMUL_4 , VSEW_16},
-                    {LMUL_8 , VSEW_32}: vl_csr_d = ((dec_data_q.rs1.r.xval[31:CFG_VL_W-2] == '0) & ~dec_data_q.mode.cfg.vlmax) ? dec_data_q.rs1.r.xval[CFG_VL_W:0] : {3'b1, {(CFG_VL_W-2){1'b0}}};
-                    {LMUL_4 , VSEW_8 },
-                    {LMUL_8 , VSEW_16}: vl_csr_d = ((dec_data_q.rs1.r.xval[31:CFG_VL_W-1] == '0) & ~dec_data_q.mode.cfg.vlmax) ? dec_data_q.rs1.r.xval[CFG_VL_W:0] : {2'b1, {(CFG_VL_W-1){1'b0}}};
-                    {LMUL_8 , VSEW_8 }: vl_csr_d = ((dec_data_q.rs1.r.xval[31:CFG_VL_W  ] == '0) & ~dec_data_q.mode.cfg.vlmax) ? dec_data_q.rs1.r.xval[CFG_VL_W:0] : {1'b1, {(CFG_VL_W  ){1'b0}}};
+                    {LMUL_F4, VSEW_8 },{LMUL_F2, VSEW_16},{LMUL_1, VSEW_32}: vl_csr_d = ((dec_data_q.rs1.r.xval[31:CFG_VL_W-5] == '0) & ~dec_data_q.mode.cfg.vlmax) ? dec_data_q.rs1.r.xval[CFG_VL_W:0] : {6'b1, {(CFG_VL_W-5){1'b0}}};
+                    {LMUL_F2, VSEW_8 },{LMUL_1, VSEW_16},{LMUL_2, VSEW_32}: vl_csr_d = ((dec_data_q.rs1.r.xval[31:CFG_VL_W-4] == '0) & ~dec_data_q.mode.cfg.vlmax) ? dec_data_q.rs1.r.xval[CFG_VL_W:0] : {5'b1, {(CFG_VL_W-4){1'b0}}};
+                    {LMUL_1, VSEW_8 },{LMUL_2, VSEW_16},{LMUL_4, VSEW_32}: vl_csr_d = ((dec_data_q.rs1.r.xval[31:CFG_VL_W-3] == '0) & ~dec_data_q.mode.cfg.vlmax) ? dec_data_q.rs1.r.xval[CFG_VL_W:0] : {4'b1, {(CFG_VL_W-3){1'b0}}};
+                    {LMUL_2, VSEW_8 },{LMUL_4, VSEW_16},{LMUL_8, VSEW_32}: vl_csr_d = ((dec_data_q.rs1.r.xval[31:CFG_VL_W-2] == '0) & ~dec_data_q.mode.cfg.vlmax) ? dec_data_q.rs1.r.xval[CFG_VL_W:0] : {3'b1, {(CFG_VL_W-2){1'b0}}};
+                    {LMUL_4, VSEW_8 },{LMUL_8, VSEW_16}: vl_csr_d = ((dec_data_q.rs1.r.xval[31:CFG_VL_W-1] == '0) & ~dec_data_q.mode.cfg.vlmax) ? dec_data_q.rs1.r.xval[CFG_VL_W:0] : {2'b1, {(CFG_VL_W-1){1'b0}}};
+                    {LMUL_8, VSEW_8 }: vl_csr_d = ((dec_data_q.rs1.r.xval[31:CFG_VL_W  ] == '0) & ~dec_data_q.mode.cfg.vlmax) ? dec_data_q.rs1.r.xval[CFG_VL_W:0] : {1'b1, {(CFG_VL_W  ){1'b0}}};
                     default: vsew_d = VSEW_INVALID;
                 endcase
             end
@@ -772,20 +576,22 @@ module vproc_core import vproc_pkg::*; #(
         end
     end
 
+    assign csr_vstart_o     = {{(32-CFG_VL_W){1'b0}}, vstart_next};
+    assign csr_vstart_set_o = vstart_wr;
+    assign csr_vxrm_o       = vxrm_next;
+    assign csr_vxrm_set_o   = vxrm_wr;
+    assign csr_vxsat_o      = vxsat_next;
+    assign csr_vxsat_set_o  = vxsat_wr;
+
 
     ///////////////////////////////////////////////////////////////////////////
     // INSTRUCTION QUEUE
 
-    // acknowledge signal from the dispatcher (indicate that an instruction has
-    // been accepted for execution on an execution unit)
     logic op_ack;
-
-    // instruction queue output signals
     logic        queue_valid_q,      queue_valid_d;
     decoder_data queue_data_q,       queue_data_d;
-    logic [31:0] queue_pending_wr_q, queue_pending_wr_d; // potential write hazards
+    logic [31:0] queue_pending_wr_q, queue_pending_wr_d;
     generate
-        // add an extra pipeline stage to calculate the hazards
         if (BUF_FLAGS[BUF_DEQUEUE]) begin
             always_ff @(posedge clk_i or negedge async_rst_n) begin : vproc_queue_valid
                 if (~async_rst_n) begin
@@ -799,8 +605,6 @@ module vproc_core import vproc_pkg::*; #(
                 end
             end
             always_ff @(posedge clk_i) begin : vproc_queue_data
-                // move in next instruction when this buffer stage is empty
-                // or when the current instruction is acknowledged
                 if ((~queue_valid_q) | op_ack) begin
                     queue_data_q       <= queue_data_d;
                     queue_pending_wr_q <= queue_pending_wr_d;
@@ -813,7 +617,6 @@ module vproc_core import vproc_pkg::*; #(
         end
     endgenerate
 
-    // instruction queue
     decoder_data queue_flags_any;
     generate
         if (INSTR_QUEUE_SZ > 0) begin
@@ -840,12 +643,14 @@ module vproc_core import vproc_pkg::*; #(
         end
     endgenerate
 
-    // potential vector register hazards of the currently dequeued instruction
     vproc_pending_wr #(
+        .CFG_VL_W       ( CFG_VL_W                ),
+        .VREG_W         ( VREG_W                  ),
         .DONT_CARE_ZERO ( DONT_CARE_ZERO          )
     ) queue_pending_wr (
         .vsew_i         ( queue_data_d.vsew       ),
         .emul_i         ( queue_data_d.emul       ),
+        .vl_i           ( queue_data_d.vl         ),
         .unit_i         ( queue_data_d.unit       ),
         .mode_i         ( queue_data_d.mode       ),
         .widenarrow_i   ( queue_data_d.widenarrow ),
@@ -853,7 +658,6 @@ module vproc_core import vproc_pkg::*; #(
         .pending_wr_o   ( queue_pending_wr_d      )
     );
 
-    // keep track of pending loads and stores
     logic pending_load_lsu, pending_store_lsu;
     assign pending_load_o  = (dec_buf_valid_q & dec_data_q.pend_load      ) |
                                                 queue_flags_any.pend_load   |
@@ -899,7 +703,6 @@ module vproc_core import vproc_pkg::*; #(
     ///////////////////////////////////////////////////////////////////////////
     // REGISTER FILE AND EXECUTION UNITS
 
-    // register file:
     logic [VPORT_WR_CNT-1:0]               vregfile_wr_en_q,   vregfile_wr_en_d;
     logic [VPORT_WR_CNT-1:0][4:0]          vregfile_wr_addr_q, vregfile_wr_addr_d;
     logic [VPORT_WR_CNT-1:0][VREG_W  -1:0] vregfile_wr_data_q, vregfile_wr_data_d;
@@ -953,17 +756,10 @@ module vproc_core import vproc_pkg::*; #(
         end
     endgenerate
 
-
-    // Pending reads
     logic [PIPE_CNT-1:0][31:0] pipe_vreg_pend_rd_by_q, pipe_vreg_pend_rd_by_d;
     logic [PIPE_CNT-1:0][31:0] pipe_vreg_pend_rd_to_q, pipe_vreg_pend_rd_to_d;
     generate
         if (BUF_FLAGS[BUF_VREG_PEND]) begin
-            // Note: A vreg write cannot happen within the first two cycles of
-            // an instruction, hence delaying the pending vreg reads signals by
-            // two cycles should cause no issues. This adds two unnecessary
-            // extra stall cycles in case a write is blocked by a pending read
-            // but that should happen rarely anyways.
             always_ff @(posedge clk_i) begin
                 pipe_vreg_pend_rd_by_q <= pipe_vreg_pend_rd_by_d;
                 pipe_vreg_pend_rd_to_q <= pipe_vreg_pend_rd_to_d;
@@ -995,22 +791,25 @@ module vproc_core import vproc_pkg::*; #(
     logic [PIPE_CNT-1:0]               pipe_vreg_wr_clr;
     logic [PIPE_CNT-1:0][1:0]          pipe_vreg_wr_clr_cnt;
 
-    logic                lsu_trans_complete_valid;
-    logic                lsu_trans_complete_ready;
-    logic [INSTR_ID_W-1:0] lsu_trans_complete_id;
-    logic                lsu_trans_complete_exc;
-    logic [5:0]          lsu_trans_complete_exccode;
+    logic                    lsu_trans_complete_valid;
+    logic                    lsu_trans_complete_ready;
+    logic [INSTR_ID_W-1:0]   lsu_trans_complete_id;
+    logic                    lsu_trans_complete_exc;
+    logic [5:0]              lsu_trans_complete_exccode;
 
-    logic                elem_xreg_valid;
-    logic                elem_xreg_ready;
-    logic [INSTR_ID_W-1:0] elem_xreg_id;
-    logic [4:0]          elem_xreg_addr;
-    logic [31:0]         elem_xreg_data;
+    logic                    elem_xreg_valid;
+    logic                    elem_xreg_ready;
+    logic [INSTR_ID_W-1:0]   elem_xreg_id;
+    logic [4:0]              elem_xreg_addr;
+    logic [31:0]             elem_xreg_data;
+
+`ifdef RISCV_ZVE32F
+    logic                    elem_freg;
+`endif
 
     generate
         for (genvar i = 0; i < PIPE_CNT; i++) begin
 `ifndef VERILATOR
-            // Currently not possible in Verilator due to https://github.com/verilator/verilator/issues/3433
             localparam int unsigned PIPE_VPORT_W[PIPE_VPORT_CNT[i]]  = VPORT_RD_W[PIPE_VPORT_IDX[i] +: PIPE_VPORT_CNT[i]];
             localparam int unsigned PIPE_VADDR_W[PIPE_VPORT_CNT[i]]  = VADDR_RD_W[PIPE_VPORT_IDX[i] +: PIPE_VPORT_CNT[i]];
 `endif
@@ -1028,47 +827,48 @@ module vproc_core import vproc_pkg::*; #(
                 end
             end
 
-            // LSU-related signals
-            logic                pending_load, pending_store;
-            logic                trans_complete_valid;
-            logic                trans_complete_ready;
-            logic [INSTR_ID_W-1:0] trans_complete_id;
-            logic                trans_complete_exc;
-            logic [5:0]          trans_complete_exccode;
-            logic                pipe_vlsu_mem_valid;
-            logic                pipe_vlsu_mem_ready;
-            logic [INSTR_ID_W-1:0] pipe_vlsu_mem_id;
-            logic [31:0]         pipe_vlsu_mem_addr;
-            logic                pipe_vlsu_mem_we;
-            logic [VMEM_W/8-1:0]   pipe_vlsu_mem_be;
-            logic [VMEM_W-1:0]     pipe_vlsu_mem_wdata;
-            logic                pipe_vlsu_mem_last;
-            logic                pipe_vlsu_mem_spec;
-            logic                pipe_vlsu_mem_resp_exc;
-            logic [5:0]          pipe_vlsu_mem_resp_exccode;
-            logic                pipe_vlsu_mem_result_valid;
-            logic [INSTR_ID_W-1:0] pipe_vlsu_mem_result_id;
-            logic [VMEM_W-1:0]     pipe_vlsu_mem_result_rdata;
-            logic                pipe_vlsu_mem_result_err;
+            logic                    pending_load, pending_store;
+            logic                    trans_complete_valid;
+            logic                    trans_complete_ready;
+            logic [INSTR_ID_W-1:0]   trans_complete_id;
+            logic                    trans_complete_exc;
+            logic [5:0]              trans_complete_exccode;
 
-            // ELEM-related signals (for XREG writeback)
-            logic                xreg_valid;
-            logic                xreg_ready;
-            logic [INSTR_ID_W-1:0] xreg_id;
-            logic [4:0]          xreg_addr;
-            logic [31:0]         xreg_data;
+            logic                    pipe_vlsu_mem_valid;
+            logic                    pipe_vlsu_mem_ready;
+            logic [INSTR_ID_W-1:0]   pipe_vlsu_mem_id;
+            logic [31:0]             pipe_vlsu_mem_addr;
+            logic                    pipe_vlsu_mem_we;
+            logic [VMEM_W/8-1:0]     pipe_vlsu_mem_be;
+            logic [VMEM_W-1:0]       pipe_vlsu_mem_wdata;
+            logic                    pipe_vlsu_mem_last;
+            logic                    pipe_vlsu_mem_spec;
+            logic                    pipe_vlsu_mem_resp_exc;
+            logic [5:0]              pipe_vlsu_mem_resp_exccode;
+            logic                    pipe_vlsu_mem_result_valid;
+            logic [INSTR_ID_W-1:0]   pipe_vlsu_mem_result_id;
+            logic [VMEM_W-1:0]       pipe_vlsu_mem_result_rdata;
+            logic                    pipe_vlsu_mem_result_err;
+
+            logic                    xreg_valid;
+            logic                    xreg_ready;
+            logic [INSTR_ID_W-1:0]   xreg_id;
+            logic [4:0]              xreg_addr;
+            logic [31:0]             xreg_data;
+        `ifdef RISCV_ZVE32F
+            logic freg_res;
+        `endif
 
             vproc_pipeline_wrapper #(
                 .VREG_W                   ( VREG_W                     ),
                 .CFG_VL_W                 ( CFG_VL_W                   ),
-                .INSTR_ID_W               ( INSTR_ID_W                 ),
-                .INSTR_ID_CNT             ( INSTR_ID_CNT               ),
+                .XIF_ID_W                 ( XIF_ID_W                   ),
+                .XIF_ID_CNT               ( XIF_ID_CNT                 ),
                 .UNITS                    ( PIPE_UNITS[i]              ),
                 .MAX_VPORT_W              ( PIPE_MAX_VPORT_W           ),
                 .MAX_VADDR_W              ( PIPE_MAX_VADDR_W           ),
                 .VPORT_CNT                ( PIPE_VPORT_CNT[i]          ),
 `ifdef VERILATOR
-                // Workaround for Verilator due to https://github.com/verilator/verilator/issues/3433
                 .VPORT_OFFSET             ( PIPE_VPORT_IDX[i]          ),
                 .VREGFILE_VPORT_CNT       ( VPORT_RD_CNT               ),
                 .VREGFILE_VPORT_W         ( VPORT_RD_W                 ),
@@ -1130,16 +930,20 @@ module vproc_core import vproc_pkg::*; #(
                 .trans_complete_id_o      ( trans_complete_id          ),
                 .trans_complete_exc_o     ( trans_complete_exc         ),
                 .trans_complete_exccode_o ( trans_complete_exccode     ),
+            `ifdef RISCV_ZVE32F
+                .freg_res                 ( freg_res                   ),
+            `endif
                 .xreg_valid_o             ( xreg_valid                 ),
                 .xreg_ready_i             ( xreg_ready                 ),
                 .xreg_id_o                ( xreg_id                    ),
                 .xreg_addr_o              ( xreg_addr                  ),
                 .xreg_data_o              ( xreg_data                  )
             );
+
             if (PIPE_UNITS[i][UNIT_LSU]) begin
-                assign pending_load_lsu           = pending_load;
-                assign pending_store_lsu          = pending_store;
-                assign vlsu_mem_valid_o           = pipe_vlsu_mem_valid;
+                assign pending_load_lsu          = pending_load;
+                assign pending_store_lsu         = pending_store;
+                assign vlsu_mem_valid_o          = pipe_vlsu_mem_valid;
                 assign pipe_vlsu_mem_ready        = vlsu_mem_ready_i;
                 assign vlsu_mem_id_o              = pipe_vlsu_mem_id;
                 assign vlsu_mem_addr_o            = pipe_vlsu_mem_addr;
@@ -1166,6 +970,9 @@ module vproc_core import vproc_pkg::*; #(
                 assign elem_xreg_id    = xreg_id;
                 assign elem_xreg_addr  = xreg_addr;
                 assign elem_xreg_data  = xreg_data;
+            `ifdef RISCV_ZVE32F
+                assign elem_freg = freg_res;
+            `endif
             end
 
         end
@@ -1202,7 +1009,7 @@ module vproc_core import vproc_pkg::*; #(
     // RESULT INTERFACE
 
     vproc_result #(
-        .INSTR_ID_W                ( INSTR_ID_W                 ),
+        .XIF_ID_W                  ( XIF_ID_W                   ),
         .DONT_CARE_ZERO            ( DONT_CARE_ZERO             )
     ) result_if (
         .clk_i                     ( clk_i                      ),
@@ -1220,6 +1027,12 @@ module vproc_core import vproc_pkg::*; #(
         .result_xreg_id_i          ( elem_xreg_id               ),
         .result_xreg_addr_i        ( elem_xreg_addr             ),
         .result_xreg_data_i        ( elem_xreg_data             ),
+    `ifdef RISCV_ZVE32F
+        .result_freg_i             ( elem_freg                  ),
+        .result_freg_o             ( fpr_res_valid_o            ),
+        .fpu_res_acc               ( fpu_res_acc_i              ),
+        .fpu_res_id                ( fpu_res_id_i               ),
+    `endif
         .result_csr_valid_i        ( result_csr_valid           ),
         .result_csr_ready_o        ( result_csr_ready           ),
         .result_csr_id_i           ( result_csr_id              ),
@@ -1227,6 +1040,9 @@ module vproc_core import vproc_pkg::*; #(
         .result_csr_delayed_i      ( result_csr_delayed         ),
         .result_csr_data_i         ( result_csr_data            ),
         .result_csr_data_delayed_i ( csr_vl_o                   ),
+        .commit_valid_i            ( commit_valid_i             ),
+        .commit_id_i               ( commit_id_i                ),
+        .commit_kill_i             ( commit_kill_i              ),
         .result_valid_o            ( result_valid_o             ),
         .result_ready_i            ( result_ready_i             ),
         .result_id_o               ( result_id_o                ),
@@ -1238,10 +1054,5 @@ module vproc_core import vproc_pkg::*; #(
         .result_err_o              ( result_err_o               ),
         .result_dbg_o              ( result_dbg_o               )
     );
-
-
-`ifdef VPROC_SVA
-`include "vproc_core_sva.svh"
-`endif
 
 endmodule

@@ -51,7 +51,8 @@ module ibex_cs_registers #(
     output logic                 ecsr_we_o   [ExternalCSRs > 0 ? ExternalCSRs : 1],
     output logic [31:0]          ecsr_wdata_o[ExternalCSRs > 0 ? ExternalCSRs : 1],
 
-    // Vector CSR interface (to/from vector core)
+    output logic [2:0]           fcsr_frm_o,
+
     output logic [31:0]          vcsr_vtype_o,     // vtype CSR output
     output logic [31:0]          vcsr_vl_o,        // vl CSR output
     output logic [31:0]          vcsr_vlenb_o,     // vlenb CSR output (constant)
@@ -255,7 +256,12 @@ module ibex_cs_registers #(
   logic        cpuctrl_err;
 
   // Vector CSRs - all 32-bit registers with effective width preserved
-  logic [31:0] vstart_q, vstart_d;      // vstart CSR (effective width depends on VLEN)
+  logic [4:0]  fflags_q, fflags_d;
+  logic        fflags_en;
+  logic [2:0]  frm_q, frm_d;
+  logic        frm_en;
+
+  logic [31:0] vstart_q, vstart_d;
   logic        vstart_en;
   logic [31:0] vxsat_q, vxsat_d;        // vxsat CSR (effective width: 1 bit)
   logic        vxsat_en;
@@ -456,7 +462,11 @@ module ibex_cs_registers #(
       end
 
       // Vector CSRs
-      12'h008: csr_rdata_int = vstart_q;              // vstart
+      12'h001: csr_rdata_int = {27'b0, fflags_q};
+      12'h002: csr_rdata_int = {29'b0, frm_q};
+      12'h003: csr_rdata_int = {24'b0, frm_q, fflags_q};
+
+      12'h008: csr_rdata_int = vstart_q;
       12'h009: csr_rdata_int = {31'b0, vxsat_q[0]};   // vxsat (1 bit effective)
       12'h00A: csr_rdata_int = {30'b0, vxrm_q[1:0]};  // vxrm (2 bits effective)
       12'h00F: csr_rdata_int = {29'b0, vxrm_q[1:0], vxsat_q[0]};  // vcsr = {vxrm, vxsat}
@@ -516,6 +526,11 @@ module ibex_cs_registers #(
     cpuctrl_we       = 1'b0;
 
     // Vector CSR write enable and data
+    fflags_en = 1'b0;
+    fflags_d  = fflags_q;
+    frm_en    = 1'b0;
+    frm_d     = frm_q;
+
     vstart_en = 1'b0;
     vstart_d  = vstart_q;
     vxsat_en  = 1'b0;
@@ -629,8 +644,22 @@ module ibex_cs_registers #(
 
         CSR_CPUCTRL: cpuctrl_we = 1'b1;
 
-        // Vector CSRs
-        12'h008: begin  // vstart
+        12'h001: begin
+          fflags_en = 1'b1;
+          fflags_d  = csr_wdata_int[4:0];
+        end
+        12'h002: begin
+          frm_en = 1'b1;
+          frm_d  = csr_wdata_int[2:0];
+        end
+        12'h003: begin
+          fflags_en = 1'b1;
+          fflags_d  = csr_wdata_int[4:0];
+          frm_en    = 1'b1;
+          frm_d     = csr_wdata_int[7:5];
+        end
+
+        12'h008: begin
           vstart_en = 1'b1;
           vstart_d  = csr_wdata_int;
         end
@@ -794,6 +823,7 @@ module ibex_cs_registers #(
   assign csr_mtvec_o = mtvec_q;
 
   // Vector CSR outputs to vector core
+  assign fcsr_frm_o    = frm_q;
   assign vcsr_vtype_o  = vtype_q;
   assign vcsr_vl_o     = vl_q;
   assign vcsr_vlenb_o  = vlenb_q;
@@ -1039,6 +1069,36 @@ module ibex_cs_registers #(
   //////////////////////////
 
   // VSTART (0x008) - Vector start index
+  ibex_csr #(
+    .Width      (32),
+    .ShadowCopy (1'b0),
+    .ResetValue ('0)
+  ) u_fflags_csr (
+    .clk_i      (clk_i),
+    .rst_ni     (rst_ni),
+    .wr_data_i  ({27'b0, fflags_d}),
+    .wr_en_i    (fflags_en),
+    .rd_data_o  (fflags_q_full),
+    .rd_error_o ()
+  );
+  logic [31:0] fflags_q_full;
+  assign fflags_q = fflags_q_full[4:0];
+
+  ibex_csr #(
+    .Width      (32),
+    .ShadowCopy (1'b0),
+    .ResetValue ('0)
+  ) u_frm_csr (
+    .clk_i      (clk_i),
+    .rst_ni     (rst_ni),
+    .wr_data_i  ({29'b0, frm_d}),
+    .wr_en_i    (frm_en),
+    .rd_data_o  (frm_q_full),
+    .rd_error_o ()
+  );
+  logic [31:0] frm_q_full;
+  assign frm_q = frm_q_full[2:0];
+
   ibex_csr #(
     .Width      (32),
     .ShadowCopy (1'b0),

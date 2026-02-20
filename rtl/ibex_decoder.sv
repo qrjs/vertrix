@@ -517,7 +517,8 @@ module ibex_decoder #(
             cpi_instr_o    = 1'b1;
             rf_ren_a_o     = 1'b1;      // speculatively read rs1 in case it is needed
             rf_ren_b_o     = 1'b1;      // speculatively read rs2 in case it is needed
-            rf_we          = 1'b1;      // speculatively enable write-back in case it is needed
+            // Matrix instructions (CUSTOM-0, opcode 0x0b) don't write back to GPR
+            rf_we          = (instr[6:2] != 5'b00010);
             rf_wdata_sel_o = RF_WD_CPI;
             illegal_insn   = 1'b0;
           end

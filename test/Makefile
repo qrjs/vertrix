@@ -14,8 +14,11 @@ TEST_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 # select the simulator to use; either verilator (default) or vivado
 SIMULATOR ?= verilator
 
+# simulation abort cycles (default 20M, can override with make SIM_ABORT_CYCLES=xxx)
+SIM_ABORT_CYCLES ?= 20000000
+
 # test directories
-TEST_DIRS := lsu alu mul sld elem csr kernel misc matrix
+TEST_DIRS := lsu alu mul sld elem csr kernel misc matrix fp
 
 # test targets
 TESTS_ALL := $(TEST_DIRS) $(addsuffix /, $(TEST_DIRS))
@@ -88,8 +91,9 @@ $(TESTS_ALL): %: $$(addsuffix .vmem,$$(basename $$(if $$(wildcard %),$$(wildcard
 	    printf "\033[0;34m[CONF]\033[0;0m $@ $$line\n";                       \
 	    sim_dir=`mktemp -d`;                                                  \
 	    echo "[INFO] Writing temporary files to $${sim_dir}";                 \
+	    set -o pipefail;                                                      \
 	    make -f $(TEST_DIR)/../sim/Makefile $(SIMULATOR) PROJ_DIR=$$sim_dir   \
-	        $$line PROG_PATHS=progs.txt SIM_ABORT_CYCLES=20000000 ENABLE_SVA=1   \
+	        $$line PROG_PATHS=progs.txt SIM_ABORT_CYCLES=$(SIM_ABORT_CYCLES) ENABLE_SVA=1   \
 	        ENABLE_PERF_COUNTERS=1                                                \
 	        TRACE_SIGS="`cat $(TEST_DIR)/trace-sigs.conf`" 2>&1 | tee sim.log; \
 	    if [ $$? -ne 0 ]; then                                                \
