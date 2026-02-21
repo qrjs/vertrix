@@ -264,6 +264,8 @@ module vproc_fpu #(
     logic [FPU_OP_W-1:0]    rsqrt_buffer_d, rsqrt_buffer_q;
     fpu_tag                  rsqrt_tag_d, rsqrt_tag_q;
     logic [FPU_OP_W/32-1:0] rsqrt_active_lanes_d, rsqrt_active_lanes_q;
+    fp_format_e              rsqrt_src_fmt_d, rsqrt_src_fmt_q;
+    logic                    rsqrt_vectorial_d, rsqrt_vectorial_q;
 
     assign rsqrt_active = (rsqrt_state_q != RSQRT_IDLE);
     assign all_rsqrt_lanes_valid = &(pipe_out_valid_fpu | ~rsqrt_active_lanes_q);
@@ -288,6 +290,8 @@ module vproc_fpu #(
         rsqrt_buffer_d       = rsqrt_buffer_q;
         rsqrt_tag_d          = rsqrt_tag_q;
         rsqrt_active_lanes_d = rsqrt_active_lanes_q;
+        rsqrt_src_fmt_d      = rsqrt_src_fmt_q;
+        rsqrt_vectorial_d    = rsqrt_vectorial_q;
         rsqrt_div_valid      = 1'b0;
 
         unique case (rsqrt_state_q)
@@ -299,6 +303,8 @@ module vproc_fpu #(
                     rsqrt_state_d        = RSQRT_SQRT_WAIT;
                     rsqrt_tag_d          = unit_in_fpu_tag;
                     rsqrt_active_lanes_d = fpu_active_lanes;
+                    rsqrt_src_fmt_d      = src_fmt;
+                    rsqrt_vectorial_d    = vectorial_op;
                 end
             end
             RSQRT_SQRT_WAIT: begin
@@ -333,6 +339,8 @@ module vproc_fpu #(
             rsqrt_buffer_q       <= rsqrt_buffer_d;
             rsqrt_tag_q          <= rsqrt_tag_d;
             rsqrt_active_lanes_q <= rsqrt_active_lanes_d;
+            rsqrt_src_fmt_q      <= rsqrt_src_fmt_d;
+            rsqrt_vectorial_q    <= rsqrt_vectorial_d;
         end
     end
 
@@ -404,7 +412,9 @@ module vproc_fpu #(
 
             if (unit_ctrl_q.mode.fpu.op_mod == 1'b1) begin
                 // vfrec7: compute 1.0 / vs2 using full-precision division
-                operand_0_fpu = {(FPU_OP_W/32){32'h3f800000}}; // 1.0f replicated across all lanes
+                // Use FP16 packed 1.0 (0x3C003C00) for vectorial mode, FP32 1.0 otherwise
+                operand_0_fpu = vectorial_op ? {(FPU_OP_W/32){32'h3C003C00}}
+                                             : {(FPU_OP_W/32){32'h3f800000}};
                 operand_1_fpu = pipe_in_op2_i_q;
                 operand_2_fpu = '0;
             end else if (unit_ctrl_q.mode.fpu.op_rev == 1'b1) begin
@@ -454,7 +464,8 @@ module vproc_fpu #(
 
         // Override operands for vfrsqrt7 DIV phase (1.0 / sqrt(vs2))
         if (rsqrt_div_valid) begin
-            operand_0_fpu = {(FPU_OP_W/32){32'h3f800000}};  // 1.0f replicated
+            operand_0_fpu = rsqrt_vectorial_q ? {(FPU_OP_W/32){32'h3C003C00}}
+                                              : {(FPU_OP_W/32){32'h3f800000}};
             operand_1_fpu = rsqrt_buffer_q;                   // sqrt(vs2)
             operand_2_fpu = '0;
         end
@@ -465,7 +476,7 @@ module vproc_fpu #(
         // bits.  fpnew requires NaN-boxing (upper bits = 0xFFFF) for
         // non-vectorial FP16 operands; without it the classifier treats them
         // as NaN and produces incorrect results.
-        if (src_fmt == FP16 && !vectorial_op) begin
+        if (src_fmt == FP16 && !vectorial_op && !rsqrt_div_valid) begin
             for (int g = 0; g < FPU_OP_W / 32; g++) begin
                 operand_0_fpu[32*g+16 +: 16] = 16'hFFFF;
                 operand_1_fpu[32*g+16 +: 16] = 16'hFFFF;
@@ -498,10 +509,10 @@ module vproc_fpu #(
                     .op_i          (rsqrt_div_valid ? fpnew_pkg::DIV :
                                     widen_reduction ? fpnew_pkg::FMADD : unit_ctrl_q.mode.fpu.op),
                     .op_mod_i      ((rsqrt_div_valid | unit_ctrl_q.mode.fpu.op == DIV | unit_ctrl_q.mode.fpu.op == SQRT) ? 1'b0 : unit_ctrl_q.mode.fpu.op_mod),
-                    .src_fmt_i     (rsqrt_div_valid ? fpnew_pkg::FP32 : src_fmt),
-                    .dst_fmt_i     (rsqrt_div_valid ? fpnew_pkg::FP32 : dst_fmt),
+                    .src_fmt_i     (rsqrt_div_valid ? rsqrt_src_fmt_q : src_fmt),
+                    .dst_fmt_i     (rsqrt_div_valid ? rsqrt_src_fmt_q : dst_fmt),
                     .int_fmt_i     (int_fmt),
-                    .vectorial_op_i(rsqrt_div_valid ? 1'b0 : vectorial_op),
+                    .vectorial_op_i(rsqrt_div_valid ? rsqrt_vectorial_q : vectorial_op),
                     .tag_i         (rsqrt_div_valid ? rsqrt_tag_q : unit_in_fpu_tag),
                     .simd_mask_i   (2'b11),
                     .in_valid_i    (rsqrt_div_valid ? rsqrt_active_lanes_q[g] :
@@ -528,8 +539,21 @@ module vproc_fpu #(
         pipe_out_res_o = fpu_raw_result;
         if (rsqrt_state_q == RSQRT_DIV_WAIT) begin
             for (int g = 0; g < FPU_OP_W / 32; g++) begin
-                if (rsqrt_buffer_q[32*g+30 -: 31] == 31'b0) begin
-                    pipe_out_res_o[32*g +: 32] = {rsqrt_buffer_q[32*g+31], 8'hFF, 23'b0};
+                if (rsqrt_vectorial_q) begin
+                    // FP16 vectorial: two FP16 values per 32-bit word
+                    // Lower half: bits [14:0] magnitude, bit [15] sign
+                    if (rsqrt_buffer_q[32*g+14 -: 15] == 15'b0) begin
+                        pipe_out_res_o[32*g +: 16] = {rsqrt_buffer_q[32*g+15], 5'h1F, 10'b0};
+                    end
+                    // Upper half: bits [30:16] magnitude, bit [31] sign
+                    if (rsqrt_buffer_q[32*g+30 -: 15] == 15'b0) begin
+                        pipe_out_res_o[32*g+16 +: 16] = {rsqrt_buffer_q[32*g+31], 5'h1F, 10'b0};
+                    end
+                end else begin
+                    // FP32: one value per 32-bit word
+                    if (rsqrt_buffer_q[32*g+30 -: 31] == 31'b0) begin
+                        pipe_out_res_o[32*g +: 32] = {rsqrt_buffer_q[32*g+31], 8'hFF, 23'b0};
+                    end
                 end
             end
         end
