@@ -93,17 +93,19 @@ static void conv3x3_fp32(
 }
 
 // ============================================================================
-// ReLU (原地) - 使用 vfmax.vv 与零向量
+// ReLU (原地) - 使用 vfmax.vv 与零向量, 向量化处理
 // ============================================================================
 
 static void relu_fp32_inplace(float* data, int size) {
-    // Use vl=1 to avoid hardware bug with vfmax.vv at vl>1
-    size_t vl1 = __riscv_vsetvl_e32m1(1);
-    for (int i = 0; i < size; i++) {
-        vfloat32m1_t v = __riscv_vle32_v_f32m1(&data[i], vl1);
-        vfloat32m1_t v_zero = __riscv_vle32_v_f32m1(&f_zero_val, vl1);
-        v = __riscv_vfmax_vv_f32m1(v, v_zero, vl1);
-        __riscv_vse32_v_f32m1(&data[i], v, vl1);
+    for (int i = 0; i < size; ) {
+        size_t vl = __riscv_vsetvl_e32m1(size - i);
+        vfloat32m1_t v = __riscv_vle32_v_f32m1(&data[i], vl);
+        // Zero vector via integer zero (IEEE 754: +0.0 = 0x00000000), no scalar FP needed
+        vfloat32m1_t v_zero = __riscv_vreinterpret_v_i32m1_f32m1(
+            __riscv_vmv_v_x_i32m1(0, vl));
+        v = __riscv_vfmax_vv_f32m1(v, v_zero, vl);
+        __riscv_vse32_v_f32m1(&data[i], v, vl);
+        i += vl;
     }
 }
 
@@ -117,32 +119,32 @@ static void maxpool2x2_fp32(
 ) {
     int out_h = in_h / 2;
     int out_w = in_w / 2;
-    // Use vl=1 to avoid hardware bug with vfmax.vv at vl>1
-    size_t vl1 = __riscv_vsetvl_e32m1(1);
-
     for (int oy = 0; oy < out_h; oy++) {
         for (int ox = 0; ox < out_w; ox++) {
             int iy = oy * 2;
             int ix = ox * 2;
 
-            for (int ch = 0; ch < c; ch++) {
-                vfloat32m1_t v00 = __riscv_vle32_v_f32m1(&input[(iy * in_w + ix) * c + ch], vl1);
-                vfloat32m1_t v01 = __riscv_vle32_v_f32m1(&input[(iy * in_w + (ix + 1)) * c + ch], vl1);
-                vfloat32m1_t v10 = __riscv_vle32_v_f32m1(&input[((iy + 1) * in_w + ix) * c + ch], vl1);
-                vfloat32m1_t v11 = __riscv_vle32_v_f32m1(&input[((iy + 1) * in_w + (ix + 1)) * c + ch], vl1);
+            // Vectorize over channel dimension (contiguous in HWC layout)
+            for (int ch = 0; ch < c; ) {
+                size_t vl = __riscv_vsetvl_e32m1(c - ch);
+                vfloat32m1_t v00 = __riscv_vle32_v_f32m1(&input[(iy * in_w + ix) * c + ch], vl);
+                vfloat32m1_t v01 = __riscv_vle32_v_f32m1(&input[(iy * in_w + (ix + 1)) * c + ch], vl);
+                vfloat32m1_t v10 = __riscv_vle32_v_f32m1(&input[((iy + 1) * in_w + ix) * c + ch], vl);
+                vfloat32m1_t v11 = __riscv_vle32_v_f32m1(&input[((iy + 1) * in_w + (ix + 1)) * c + ch], vl);
 
-                vfloat32m1_t vmax01 = __riscv_vfmax_vv_f32m1(v00, v01, vl1);
-                vfloat32m1_t vmax23 = __riscv_vfmax_vv_f32m1(v10, v11, vl1);
-                vfloat32m1_t vmax   = __riscv_vfmax_vv_f32m1(vmax01, vmax23, vl1);
+                vfloat32m1_t vmax01 = __riscv_vfmax_vv_f32m1(v00, v01, vl);
+                vfloat32m1_t vmax23 = __riscv_vfmax_vv_f32m1(v10, v11, vl);
+                vfloat32m1_t vmax   = __riscv_vfmax_vv_f32m1(vmax01, vmax23, vl);
 
-                __riscv_vse32_v_f32m1(&output[(oy * out_w + ox) * c + ch], vmax, vl1);
+                __riscv_vse32_v_f32m1(&output[(oy * out_w + ox) * c + ch], vmax, vl);
+                ch += vl;
             }
         }
     }
 }
 
 // ============================================================================
-// 全连接层 - 使用 vfmul.vv + vfredusum.vs 向量化点积
+// 全连接层 - 使用 vfmul.vv + vfredusum.vs 向量化点积 (真正向量化)
 // ============================================================================
 
 static void fc_fp32(
@@ -150,21 +152,26 @@ static void fc_fp32(
     const float* weight, int out_features,
     float* output
 ) {
-    // Use vl=1 with vfmacc to avoid vfmul/vfredusum with vl>1 (hardware bug)
-    size_t vl1 = __riscv_vsetvl_e32m1(1);
-
     for (int o = 0; o < out_features; o++) {
         const float* w_row = weight + o * in_features;
 
-        vfloat32m1_t v_sum = __riscv_vle32_v_f32m1(&f_zero_val, vl1);
+        // Initialize accumulator to 0.0 (element 0) using integer zero
+        size_t vl1 = __riscv_vsetvl_e32m1(1);
+        vfloat32m1_t v_acc = __riscv_vreinterpret_v_i32m1_f32m1(
+            __riscv_vmv_v_x_i32m1(0, vl1));
 
-        for (int i = 0; i < in_features; i++) {
-            vfloat32m1_t v_in = __riscv_vle32_v_f32m1(&input[i], vl1);
-            vfloat32m1_t v_w  = __riscv_vle32_v_f32m1(&w_row[i], vl1);
-            v_sum = __riscv_vfmacc_vv_f32m1(v_sum, v_w, v_in, vl1);
+        // Vectorized dot product: vfmul + vfredusum
+        for (int i = 0; i < in_features; ) {
+            size_t vl = __riscv_vsetvl_e32m1(in_features - i);
+            vfloat32m1_t v_in = __riscv_vle32_v_f32m1(&input[i], vl);
+            vfloat32m1_t v_w  = __riscv_vle32_v_f32m1(&w_row[i], vl);
+            vfloat32m1_t v_prod = __riscv_vfmul_vv_f32m1(v_in, v_w, vl);
+            v_acc = __riscv_vfredusum_vs_f32m1_f32m1(v_prod, v_acc, vl);
+            i += vl;
         }
 
-        __riscv_vse32_v_f32m1(&output[o], v_sum, vl1);
+        // Store result (element 0 of v_acc holds the dot product)
+        __riscv_vse32_v_f32m1(&output[o], v_acc, vl1);
     }
 }
 

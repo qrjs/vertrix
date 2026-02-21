@@ -1808,11 +1808,13 @@ module vproc_decoder #(
                                     mode_o.fpu.op     = SQRT;
                                     instr_illegal     = 1'b0;
                                 end
-                                5'b00100: begin             // vfrsqrt7.v (not supported - fpnew lacks lookup table)
+                                5'b00100: begin             // vfrsqrt7.v (deferred - requires 2-pass SQRT+DIV, not feasible in single pipeline)
                                     instr_illegal     = 1'b1;
                                 end
-                                5'b00101: begin             // vfrec7.v (not supported - fpnew lacks lookup table)
-                                    instr_illegal     = 1'b1;
+                                5'b00101: begin             // vfrec7.v - implemented as full-precision DIV(1.0, vs2)
+                                    mode_o.fpu.op     = DIV;
+                                    mode_o.fpu.op_mod = 1'b1;
+                                    instr_illegal     = 1'b0;
                                 end
                                 5'b10000: begin             // vfclass.v
                                     mode_o.fpu.op     = CLASSIFY;

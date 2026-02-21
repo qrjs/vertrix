@@ -278,7 +278,7 @@ def main():
     if not os.path.exists(model_path):
         print(f"错误: 找不到模型文件 {model_path}")
         print("请先运行 qat_train_mnist.py 训练模型")
-        return
+        sys.exit(1)
 
     # 创建模型并加载权重
     print(f"从模型加载: {model_path}")

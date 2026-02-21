@@ -81,7 +81,12 @@ module vproc_fpu #(
 
     logic [FPU_OP_W  -1:0] operand_0_fpu, operand_1_fpu, operand_2_fpu;
 
-   
+    // Per-lane active mask derived from input-side VL (fixes vl>1 deadlock)
+    logic [FPU_OP_W/8-1:0]  fpu_in_vl_mask;
+    logic [FPU_OP_W/32-1:0] fpu_active_lanes;
+    logic                    all_active_lanes_valid;
+
+
 
     ///////////////////////////////////////////////////////////////////////////
     //Input Connections - Connect to buffers
@@ -101,8 +106,8 @@ module vproc_fpu #(
     ///////////////////////////////////////////////////////////////////////////
 
     always_comb begin
-        pipe_in_ready_o = &pipe_in_ready_fpu;  //only pass ready signal when all data has been processed
-        pipe_out_valid_o = &pipe_out_valid_fpu & (~unit_out_fpu_tag[0].ctrl.mode.fpu.op_reduction | unit_out_fpu_tag[0].last_cycle); //only pass data valid signal when entire reduction operation is complete
+        pipe_in_ready_o = &(pipe_in_ready_fpu | ~fpu_active_lanes);  //only wait for active lanes to be ready
+        pipe_out_valid_o = all_active_lanes_valid & (~unit_out_fpu_tag[0].ctrl.mode.fpu.op_reduction | unit_out_fpu_tag[0].last_cycle); //only pass data valid signal when all active lanes complete
         pipe_out_ctrl_o = unit_out_fpu_tag[0].ctrl; //only passing from the lowest FPU, all tag data should be the same
         reduction_buffer_d = pipe_out_res_o[31:0]; //reduction operation only uses the lowest FPU
     end
@@ -188,6 +193,22 @@ module vproc_fpu #(
     assign pipe_out_mask_o = (pipe_out_ctrl_o.mode.fpu.masked ? pipe_in_mask_i : {(FPU_OP_W/8){1'b1}}) & vl_mask; //TODO: may need to buffer or pass the input operand mask as metadata for masked operations
 
     ///////////////////////////////////////////////////////////////////////////
+    // Per-lane active mask from input VL (fixes deadlock when VL < pipeline width)
+    ///////////////////////////////////////////////////////////////////////////
+
+    assign fpu_in_vl_mask = ~unit_ctrl_q.vl_part_0 ?
+        ({(FPU_OP_W/8){1'b1}} >> (~unit_ctrl_q.vl_part)) : '0;
+
+    generate
+        for (genvar gl = 0; gl < FPU_OP_W / 32; gl++) begin : gen_active_lanes
+            assign fpu_active_lanes[gl] = |fpu_in_vl_mask[4*gl +: 4];
+        end
+    endgenerate
+
+    // All active lanes have produced valid output
+    assign all_active_lanes_valid = &(pipe_out_valid_fpu | ~fpu_active_lanes);
+
+    ///////////////////////////////////////////////////////////////////////////
     //Input connections to FPU
     ///////////////////////////////////////////////////////////////////////////
 
@@ -241,7 +262,12 @@ module vproc_fpu #(
         
          end else if (unit_ctrl_q.mode.fpu.op == DIV) begin
 
-            if (unit_ctrl_q.mode.fpu.op_rev == 1'b1) begin
+            if (unit_ctrl_q.mode.fpu.op_mod == 1'b1) begin
+                // vfrec7: compute 1.0 / vs2 using full-precision division
+                operand_0_fpu = {(FPU_OP_W/32){32'h3f800000}}; // 1.0f replicated across all lanes
+                operand_1_fpu = pipe_in_op2_i_q;
+                operand_2_fpu = '0;
+            end else if (unit_ctrl_q.mode.fpu.op_rev == 1'b1) begin
                 //Reverse input operands
                 operand_0_fpu = pipe_in_op1_i_q;
                 operand_1_fpu = pipe_in_op2_i_q;
@@ -295,7 +321,11 @@ module vproc_fpu #(
     generate
         for (genvar g = 0; g < FPU_OP_W/ 32; g++) begin
               fpnew_top #(
-                    .DivSqrtSel    (fpnew_pkg::TH32),                   // Use FP32 div/sqrt path for Zve32f and avoid C910 THMULTI path
+                    `ifdef RISCV_ZVFH
+                    .DivSqrtSel    (fpnew_pkg::PULP),                    // Multi-format div/sqrt for FP16+FP32 support
+                    `else
+                    .DivSqrtSel    (fpnew_pkg::TH32),                    // FP32-only div/sqrt path for Zve32f
+                    `endif
                     .Features      (FPU_FEATURES),        //TODO:Pass in from top level ideally (or define as part of package? if so cant swap them)
                     .Implementation(FPU_IMPLEMENTATION),  //TODO:Pass in from top level ideally (or define as part of package? if so cant swap them)
                     .TagType       (fpu_tag)              // Type for metadata to pass through with instruction.  allows for pipelined operation
@@ -306,21 +336,21 @@ module vproc_fpu #(
                     .operands_i    ({operand_2_fpu[32*g +: 32], operand_1_fpu[32*g +: 32], operand_0_fpu[32*g +: 32]}),  
                     .rnd_mode_i    (unit_ctrl_q.mode.fpu.rnd_mode ), //TODO:Needs to be read from the CSR (can do this at decoder?)
                     .op_i          (unit_ctrl_q.mode.fpu.op ),       
-                    .op_mod_i      (unit_ctrl_q.mode.fpu.op_mod ),       
+                    .op_mod_i      (unit_ctrl_q.mode.fpu.op == DIV ? 1'b0 : unit_ctrl_q.mode.fpu.op_mod ),       
                     .src_fmt_i     (src_fmt),                              
                     .dst_fmt_i     (dst_fmt),                           
                     .int_fmt_i     (int_fmt),                            
                     .vectorial_op_i(vectorial_op),                        
                     .tag_i         (unit_in_fpu_tag),                       
                     .simd_mask_i   (2'b11),                                 //TODO: In SIMD mode, select the active lanes to not pollute the output status flags.  Derive from input mask
-                    .in_valid_i    (data_valid_i_q),                        //DIRECT CONNECT to pipe_in_valid_i
-                    .in_ready_o    (pipe_in_ready_fpu[g]),                   
-                    .flush_i       (~sync_rst_ni),                          
-                    .result_o      (pipe_out_res_o[32*g +: 32]),            
+                    .in_valid_i    (data_valid_i_q & fpu_active_lanes[g]),   //only present valid input to active lanes
+                    .in_ready_o    (pipe_in_ready_fpu[g]),
+                    .flush_i       (~sync_rst_ni),
+                    .result_o      (pipe_out_res_o[32*g +: 32]),
                     .status_o      (),                                      //TODO: RISCV FFLAGS status regs/ vector float instructions need to update the CSR
-                    .tag_o         (unit_out_fpu_tag[g]),              
-                    .out_valid_o   (pipe_out_valid_fpu[g]),                  
-                    .out_ready_i   ((&pipe_out_valid_fpu)),                 //output only ready when pipeline is ready(TODO: Why does this signal not get raised for ops that arent DIV?) and all units are finished operating.  Causes units to hold their outputs
+                    .tag_o         (unit_out_fpu_tag[g]),
+                    .out_valid_o   (pipe_out_valid_fpu[g]),
+                    .out_ready_i   (all_active_lanes_valid),                   //consume output when all active lanes done (fixes vl>1 deadlock)
                     .busy_o        ()                                       //TODO: Can be monitored for usage? Should be unneeded
                 );
 
