@@ -1808,8 +1808,10 @@ module vproc_decoder #(
                                     mode_o.fpu.op     = SQRT;
                                     instr_illegal     = 1'b0;
                                 end
-                                5'b00100: begin             // vfrsqrt7.v (deferred - requires 2-pass SQRT+DIV, not feasible in single pipeline)
-                                    instr_illegal     = 1'b1;
+                                5'b00100: begin             // vfrsqrt7.v - implemented as 2-phase SQRT then DIV(1.0, sqrt)
+                                    mode_o.fpu.op     = SQRT;
+                                    mode_o.fpu.op_mod = 1'b1;  // signals vfrsqrt7 to FPU state machine
+                                    instr_illegal     = 1'b0;
                                 end
                                 5'b00101: begin             // vfrec7.v - implemented as full-precision DIV(1.0, vs2)
                                     mode_o.fpu.op     = DIV;

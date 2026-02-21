@@ -12,6 +12,8 @@ import torch
 import numpy as np
 from qat_train_mnist import MNISTQATNet
 import os
+import struct
+import sys
 
 def quantize_to_int8(tensor):
     """将浮点张量量化为int8"""
@@ -202,6 +204,7 @@ def export_fp32_weights_to_c_header(model, output_path='mnist_weights_fp32.h'):
             ('fc3', 'fc3.weight', (10, 32)),
         ]
 
+        all_ok = True
         for name, key, shape in layers:
             weight = state_dict[key].detach().cpu().numpy().flatten()
             f.write(f"// {name} weights: shape {shape}\n")
@@ -209,8 +212,14 @@ def export_fp32_weights_to_c_header(model, output_path='mnist_weights_fp32.h'):
             write_float_array_data(f, weight)
             f.write("};\n\n")
             print(f"  {name}: shape={shape}, range=[{weight.min():.6f}, {weight.max():.6f}]")
+            if not verify_fp32_export(weight, name):
+                all_ok = False
 
         f.write("#endif // MNIST_WEIGHTS_FP32_H\n")
+
+    if not all_ok:
+        print("ERROR: FP32 export verification FAILED")
+        sys.exit(1)
 
     print(f"FP32权重导出完成: {output_path}")
 
@@ -223,6 +232,31 @@ def write_float_array_data(f, data, items_per_line=12):
         suffix = ", " if i < len(data) - 1 else ""
         f.write(f"{val:.8e}f{suffix}")
     f.write("\n")
+
+def verify_fp32_export(weight_np, name):
+    """Verify FP32 weight array has no NaN/Inf and string format roundtrips exactly."""
+    flat = weight_np.flatten().astype(np.float32)
+
+    nan_count = int(np.sum(np.isnan(flat)))
+    inf_count = int(np.sum(np.isinf(flat)))
+    if nan_count > 0 or inf_count > 0:
+        print(f"  ERROR: {name} has {nan_count} NaN, {inf_count} Inf values")
+        return False
+
+    mismatches = 0
+    for val in flat:
+        original_u32 = struct.unpack('<I', struct.pack('<f', float(val)))[0]
+        parsed = np.float32(float(f"{val:.8e}"))
+        parsed_u32 = struct.unpack('<I', struct.pack('<f', float(parsed)))[0]
+        if original_u32 != parsed_u32:
+            mismatches += 1
+
+    if mismatches > 0:
+        print(f"  ERROR: {name} has {mismatches}/{len(flat)} bit-exact roundtrip failures")
+        return False
+
+    print(f"  VERIFY: {name} OK — {len(flat)} values, no NaN/Inf, bit-exact roundtrip")
+    return True
 
 def export_fp32_test_sample(output_path='mnist_test_sample_fp32.h', num_samples=5):
     """导出FP32格式的测试样本"""
@@ -271,7 +305,6 @@ def export_fp32_test_sample(output_path='mnist_test_sample_fp32.h', num_samples=
 
 def main():
     """主导出流程"""
-    import sys
 
     model_path = 'models/mnist_qat_quantized.pth'
 

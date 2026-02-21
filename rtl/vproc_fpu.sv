@@ -61,8 +61,8 @@ module vproc_fpu #(
     //store the intermediate result of the reduction operation here
     logic [31:0] reduction_buffer_d, reduction_buffer_q;
 
-    logic last_cycle; 
-    
+    logic last_cycle;
+
 
     ///////////////////////////////////////////////////////////////////////////
     // FPU ARITHMETIC defines
@@ -71,6 +71,11 @@ module vproc_fpu #(
     ///////////////////////////////////////////////////////////////////////////
     logic [FPU_OP_W/ 32 - 1:0] pipe_in_ready_fpu;
     logic [FPU_OP_W/ 32 - 1:0] pipe_out_valid_fpu;
+
+    // Forward declarations for vfrsqrt7 state machine (defined below)
+    logic rsqrt_active;
+    logic all_rsqrt_lanes_valid;
+    logic rsqrt_div_valid;
 
     fpu_tag unit_in_fpu_tag;
     assign unit_in_fpu_tag.ctrl = unit_ctrl_q;
@@ -106,10 +111,16 @@ module vproc_fpu #(
     ///////////////////////////////////////////////////////////////////////////
 
     always_comb begin
-        pipe_in_ready_o = &(pipe_in_ready_fpu | ~fpu_active_lanes);  //only wait for active lanes to be ready
-        pipe_out_valid_o = all_active_lanes_valid & (~unit_out_fpu_tag[0].ctrl.mode.fpu.op_reduction | unit_out_fpu_tag[0].last_cycle); //only pass data valid signal when all active lanes complete
-        pipe_out_ctrl_o = unit_out_fpu_tag[0].ctrl; //only passing from the lowest FPU, all tag data should be the same
-        reduction_buffer_d = pipe_out_res_o[31:0]; //reduction operation only uses the lowest FPU
+        if (rsqrt_active) begin
+            pipe_in_ready_o  = 1'b0;  // block upstream during 2-phase rsqrt
+            pipe_out_valid_o = (rsqrt_state_q == RSQRT_DIV_WAIT) & all_rsqrt_lanes_valid;
+            pipe_out_ctrl_o  = rsqrt_tag_q.ctrl;
+        end else begin
+            pipe_in_ready_o  = &(pipe_in_ready_fpu | ~fpu_active_lanes);
+            pipe_out_valid_o = all_active_lanes_valid & (~unit_out_fpu_tag[0].ctrl.mode.fpu.op_reduction | unit_out_fpu_tag[0].last_cycle);
+            pipe_out_ctrl_o  = unit_out_fpu_tag[0].ctrl;
+        end
+        reduction_buffer_d = pipe_out_res_o[31:0];
     end
 
     ///////////////////////////////////////////////////////////////////////////
@@ -207,6 +218,91 @@ module vproc_fpu #(
 
     // All active lanes have produced valid output
     assign all_active_lanes_valid = &(pipe_out_valid_fpu | ~fpu_active_lanes);
+
+    ///////////////////////////////////////////////////////////////////////////
+    // vfrsqrt7 two-phase state machine: SQRT(vs2) then DIV(1.0, sqrt_result)
+    ///////////////////////////////////////////////////////////////////////////
+    typedef enum logic [1:0] {
+        RSQRT_IDLE,
+        RSQRT_SQRT_WAIT,
+        RSQRT_DIV_PEND,
+        RSQRT_DIV_WAIT
+    } rsqrt_state_e;
+
+    rsqrt_state_e rsqrt_state_d, rsqrt_state_q;
+    logic [FPU_OP_W-1:0]    rsqrt_buffer_d, rsqrt_buffer_q;
+    fpu_tag                  rsqrt_tag_d, rsqrt_tag_q;
+    logic [FPU_OP_W/32-1:0] rsqrt_active_lanes_d, rsqrt_active_lanes_q;
+
+    assign rsqrt_active = (rsqrt_state_q != RSQRT_IDLE);
+    assign all_rsqrt_lanes_valid = &(pipe_out_valid_fpu | ~rsqrt_active_lanes_q);
+
+    logic rsqrt_div_accepted;
+    assign rsqrt_div_accepted = &(pipe_in_ready_fpu | ~rsqrt_active_lanes_q);
+
+    // Compute out_ready for fpnew: use saved active lanes during rsqrt,
+    // and add back-pressure from downstream during the final DIV phase.
+    logic fpu_out_ready;
+    always_comb begin
+        unique case (rsqrt_state_q)
+            RSQRT_DIV_WAIT:  fpu_out_ready = all_rsqrt_lanes_valid & pipe_out_ready_i;
+            RSQRT_SQRT_WAIT,
+            RSQRT_DIV_PEND:  fpu_out_ready = all_rsqrt_lanes_valid;
+            default:         fpu_out_ready = all_active_lanes_valid;
+        endcase
+    end
+
+    always_comb begin
+        rsqrt_state_d        = rsqrt_state_q;
+        rsqrt_buffer_d       = rsqrt_buffer_q;
+        rsqrt_tag_d          = rsqrt_tag_q;
+        rsqrt_active_lanes_d = rsqrt_active_lanes_q;
+        rsqrt_div_valid      = 1'b0;
+
+        unique case (rsqrt_state_q)
+            RSQRT_IDLE: begin
+                if (data_valid_i_q
+                    & (unit_ctrl_q.mode.fpu.op == SQRT)
+                    & (unit_ctrl_q.mode.fpu.op_mod == 1'b1)) begin
+                    rsqrt_state_d        = RSQRT_SQRT_WAIT;
+                    rsqrt_tag_d          = unit_in_fpu_tag;
+                    rsqrt_active_lanes_d = fpu_active_lanes;
+                end
+            end
+            RSQRT_SQRT_WAIT: begin
+                if (all_rsqrt_lanes_valid) begin
+                    rsqrt_buffer_d = pipe_out_res_o;
+                    rsqrt_state_d  = RSQRT_DIV_PEND;
+                end
+            end
+            RSQRT_DIV_PEND: begin
+                rsqrt_div_valid = 1'b1;
+                if (rsqrt_div_accepted) begin
+                    rsqrt_state_d = RSQRT_DIV_WAIT;
+                end
+            end
+            RSQRT_DIV_WAIT: begin
+                if (all_rsqrt_lanes_valid & pipe_out_ready_i) begin
+                    rsqrt_state_d = RSQRT_IDLE;
+                end
+            end
+        endcase
+    end
+
+    always_ff @(posedge clk_i or negedge async_rst_ni) begin
+        if (~async_rst_ni) begin
+            rsqrt_state_q        <= RSQRT_IDLE;
+            rsqrt_buffer_q       <= '0;
+            rsqrt_active_lanes_q <= '0;
+        end else if (~sync_rst_ni) begin
+            rsqrt_state_q <= RSQRT_IDLE;
+        end else begin
+            rsqrt_state_q        <= rsqrt_state_d;
+            rsqrt_buffer_q       <= rsqrt_buffer_d;
+            rsqrt_tag_q          <= rsqrt_tag_d;
+            rsqrt_active_lanes_q <= rsqrt_active_lanes_d;
+        end
+    end
 
     ///////////////////////////////////////////////////////////////////////////
     //Input connections to FPU
@@ -312,6 +408,13 @@ module vproc_fpu #(
 
         end
 
+        // Override operands for vfrsqrt7 DIV phase (1.0 / sqrt(vs2))
+        if (rsqrt_div_valid) begin
+            operand_0_fpu = {(FPU_OP_W/32){32'h3f800000}};  // 1.0f replicated
+            operand_1_fpu = rsqrt_buffer_q;                   // sqrt(vs2)
+            operand_2_fpu = '0;
+        end
+
     end
 
     ///////////////////////////////////////////////////////////////////////////
@@ -334,24 +437,25 @@ module vproc_fpu #(
                     .clk_i         (clk_i),                               
                     .rst_ni        (async_rst_ni),          
                     .operands_i    ({operand_2_fpu[32*g +: 32], operand_1_fpu[32*g +: 32], operand_0_fpu[32*g +: 32]}),  
-                    .rnd_mode_i    (unit_ctrl_q.mode.fpu.rnd_mode ), //TODO:Needs to be read from the CSR (can do this at decoder?)
-                    .op_i          (unit_ctrl_q.mode.fpu.op ),       
-                    .op_mod_i      (unit_ctrl_q.mode.fpu.op == DIV ? 1'b0 : unit_ctrl_q.mode.fpu.op_mod ),       
-                    .src_fmt_i     (src_fmt),                              
-                    .dst_fmt_i     (dst_fmt),                           
-                    .int_fmt_i     (int_fmt),                            
-                    .vectorial_op_i(vectorial_op),                        
-                    .tag_i         (unit_in_fpu_tag),                       
-                    .simd_mask_i   (2'b11),                                 //TODO: In SIMD mode, select the active lanes to not pollute the output status flags.  Derive from input mask
-                    .in_valid_i    (data_valid_i_q & fpu_active_lanes[g]),   //only present valid input to active lanes
+                    .rnd_mode_i    (rsqrt_div_valid ? rsqrt_tag_q.ctrl.mode.fpu.rnd_mode : unit_ctrl_q.mode.fpu.rnd_mode),
+                    .op_i          (rsqrt_div_valid ? fpnew_pkg::DIV : unit_ctrl_q.mode.fpu.op),
+                    .op_mod_i      ((rsqrt_div_valid | unit_ctrl_q.mode.fpu.op == DIV | unit_ctrl_q.mode.fpu.op == SQRT) ? 1'b0 : unit_ctrl_q.mode.fpu.op_mod),
+                    .src_fmt_i     (rsqrt_div_valid ? fpnew_pkg::FP32 : src_fmt),
+                    .dst_fmt_i     (rsqrt_div_valid ? fpnew_pkg::FP32 : dst_fmt),
+                    .int_fmt_i     (int_fmt),
+                    .vectorial_op_i(rsqrt_div_valid ? 1'b0 : vectorial_op),
+                    .tag_i         (rsqrt_div_valid ? rsqrt_tag_q : unit_in_fpu_tag),
+                    .simd_mask_i   (2'b11),
+                    .in_valid_i    (rsqrt_div_valid ? rsqrt_active_lanes_q[g] :
+                                    (rsqrt_active ? 1'b0 : (data_valid_i_q & fpu_active_lanes[g]))),
                     .in_ready_o    (pipe_in_ready_fpu[g]),
                     .flush_i       (~sync_rst_ni),
                     .result_o      (pipe_out_res_o[32*g +: 32]),
-                    .status_o      (),                                      //TODO: RISCV FFLAGS status regs/ vector float instructions need to update the CSR
+                    .status_o      (),
                     .tag_o         (unit_out_fpu_tag[g]),
                     .out_valid_o   (pipe_out_valid_fpu[g]),
-                    .out_ready_i   (all_active_lanes_valid),                   //consume output when all active lanes done (fixes vl>1 deadlock)
-                    .busy_o        ()                                       //TODO: Can be monitored for usage? Should be unneeded
+                    .out_ready_i   (fpu_out_ready),
+                    .busy_o        ()
                 );
 
             

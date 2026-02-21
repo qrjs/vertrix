@@ -13,7 +13,7 @@ ifeq ($(COMPILER),gcc)
     RISCV_CC            := riscv32-unknown-elf-gcc
     RISCV_DUMP          := riscv32-unknown-elf-objdump
     RISCV_OBCP          := riscv32-unknown-elf-objcopy
-    ARCH                := rv32im$(if $(filter 1,$(RISCV_ZVE32F)),f,)v$(if $(filter 1,$(RISCV_ZVE32F)),_zve32f,)
+    ARCH                := rv32im$(if $(filter 1,$(RISCV_ZVE32F)$(RISCV_ZVFH)),f,)v$(if $(filter 1,$(RISCV_ZVE32F)$(RISCV_ZVFH)),_zve32f,)
     LD_SCRIPT           := $(SW_DIR)/link.ld
 else ifeq ($(COMPILER),llvm)
     # Pick the first clang executable in $PATH with version >= 14, or the
@@ -34,7 +34,7 @@ else ifeq ($(COMPILER),llvm)
     RISCV_OBCP          := $(shell find `echo $$PATH | sed 's/:/ /g'`         \
                              -maxdepth 1 -name 'llvm-objcopy*' |              \
                              (cat && echo llvm-objcopy) | head -n 1)
-    ARCH                := rv32im$(if $(filter 1,$(RISCV_ZVE32F)),f_zve32f,zve32x)
+    ARCH                := rv32im$(if $(filter 1,$(RISCV_ZVE32F)$(RISCV_ZVFH)),f_zve32f,zve32x)
     CC_SPECIFIC_OPTIONS := -fuse-ld=lld -Wno-unused-command-line-argument
     LD_SCRIPT           := $(SW_DIR)/lld_link.ld
 endif

@@ -412,16 +412,22 @@ module vproc_unit_wrapper import vproc_pkg::*; #(
                 instr_speculative = DONT_CARE_ZERO ? '0 : 'x;
                 instr_committed   = DONT_CARE_ZERO ? '0 : 'x;
                 unique case (instr_state_i[unit_out_ctrl.id])
-                    INSTR_SPECULATIVE: instr_speculative = 1'b1;
-                    INSTR_COMMITTED,
-                    INSTR_KILLED:      instr_speculative = 1'b0;
-                    default: ;
-                endcase
-                unique case (instr_state_i[unit_out_ctrl.id])
-                    INSTR_SPECULATIVE,
-                    INSTR_KILLED:      instr_committed = 1'b0;
-                    INSTR_COMMITTED:   instr_committed = 1'b1;
-                    default: ;
+                    INSTR_INVALID: begin
+                        instr_speculative = 1'b0;
+                        instr_committed   = 1'b0;
+                    end
+                    INSTR_SPECULATIVE: begin
+                        instr_speculative = 1'b1;
+                        instr_committed   = 1'b0;
+                    end
+                    INSTR_COMMITTED: begin
+                        instr_speculative = 1'b0;
+                        instr_committed   = 1'b1;
+                    end
+                    INSTR_KILLED: begin
+                        instr_speculative = 1'b0;
+                        instr_committed   = 1'b0;
+                    end
                 endcase
             end
 
@@ -646,16 +652,22 @@ module vproc_unit_wrapper import vproc_pkg::*; #(
                 instr_speculative = DONT_CARE_ZERO ? '0 : 'x;
                 instr_committed   = DONT_CARE_ZERO ? '0 : 'x;
                 unique case (instr_state_i[unit_out_ctrl.id])
-                    INSTR_SPECULATIVE: instr_speculative = 1'b1;
-                    INSTR_COMMITTED,
-                    INSTR_KILLED:      instr_speculative = 1'b0;
-                    default: ;
-                endcase
-                unique case (instr_state_i[unit_out_ctrl.id])
-                    INSTR_SPECULATIVE,
-                    INSTR_KILLED:      instr_committed = 1'b0;
-                    INSTR_COMMITTED:   instr_committed = 1'b1;
-                    default: ;
+                    INSTR_INVALID: begin
+                        instr_speculative = 1'b0;
+                        instr_committed   = 1'b0;
+                    end
+                    INSTR_SPECULATIVE: begin
+                        instr_speculative = 1'b1;
+                        instr_committed   = 1'b0;
+                    end
+                    INSTR_COMMITTED: begin
+                        instr_speculative = 1'b0;
+                        instr_committed   = 1'b1;
+                    end
+                    INSTR_KILLED: begin
+                        instr_speculative = 1'b0;
+                        instr_committed   = 1'b0;
+                    end
                 endcase
             end
             

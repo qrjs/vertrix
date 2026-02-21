@@ -132,16 +132,24 @@ module vproc_vregpack #(
         instr_speculative = DONT_CARE_ZERO ? '0 : 'x;
         instr_killed      = DONT_CARE_ZERO ? '0 : 'x;
         unique case (instr_state_i[stage_state_q.instr_id])
-            INSTR_SPECULATIVE: instr_speculative = 1'b1;
-            INSTR_COMMITTED,
-            INSTR_KILLED:      instr_speculative = 1'b0;
-            default: ;
-        endcase
-        unique case (instr_state_i[stage_state_q.instr_id])
-            INSTR_SPECULATIVE,
-            INSTR_COMMITTED:   instr_killed = 1'b0;
-            INSTR_KILLED:      instr_killed = 1'b1;
-            default: ;
+            INSTR_INVALID: begin
+                // Treat INSTR_INVALID like COMMITTED to avoid 'x propagation
+                // in synthesis while preserving functional behavior.
+                instr_speculative = 1'b0;
+                instr_killed      = 1'b0;
+            end
+            INSTR_SPECULATIVE: begin
+                instr_speculative = 1'b1;
+                instr_killed      = 1'b0;
+            end
+            INSTR_COMMITTED: begin
+                instr_speculative = 1'b0;
+                instr_killed      = 1'b0;
+            end
+            INSTR_KILLED: begin
+                instr_speculative = 1'b0;
+                instr_killed      = 1'b1;
+            end
         endcase
     end
 
