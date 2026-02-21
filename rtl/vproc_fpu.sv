@@ -272,6 +272,12 @@ module vproc_fpu #(
             end
 
 
+        end else if (unit_ctrl_q.mode.fpu.op == SQRT) begin
+
+            operand_0_fpu = pipe_in_op2_i_q;
+            operand_1_fpu = 32'b0;//This operand is unused by these operations
+            operand_2_fpu = 32'b0;//This operand is unused by these operations
+
         end else if (unit_ctrl_q.mode.fpu.op == CLASSIFY | unit_ctrl_q.mode.fpu.op == F2I | unit_ctrl_q.mode.fpu.op == I2F) begin
 
             operand_0_fpu = pipe_in_op2_i_q;

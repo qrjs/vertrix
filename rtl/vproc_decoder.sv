@@ -1792,22 +1792,36 @@ module vproc_decoder #(
                         end
 
                         {6'b010011, 3'b001}: begin  // FUNARY1 ENCODING
-
-
                             unit_o                = UNIT_FPU;
-                            mode_o.fpu.op         = CLASSIFY; //vfclass.v //TODO:condition based on vs1 for selection between FUNARY1 OPS
                             mode_o.fpu.op_mod     = 1'b0;
                             mode_o.fpu.op_rev     = 1'b0;
+                            mode_o.fpu.op_reduction = 1'b0;
                             mode_o.fpu.rnd_mode   = float_round_mode_i;
                             mode_o.fpu.masked     = instr_masked;
                             mode_o.fpu.src_1_narrow = 1'b0;
                             mode_o.fpu.src_2_narrow = 1'b0;
                             widenarrow_o          = OP_SINGLEWIDTH;
-                           // instr_illegal         = 1'b1;
-                            rs1_o.vreg   = 1'b0; //rs1 is not a vector register, mark it so it does not cause illegal instruction with attempted reads
-                            mode_o.fpu.op_reduction = 1'b0;
+                            rs1_o.vreg   = 1'b0; //rs1 is not a vector register
 
-                                            
+                            unique case (instr_vs1)
+                                5'b00000: begin             // vfsqrt.v
+                                    mode_o.fpu.op     = SQRT;
+                                    instr_illegal     = 1'b0;
+                                end
+                                5'b00100: begin             // vfrsqrt7.v (not supported - fpnew lacks lookup table)
+                                    instr_illegal     = 1'b1;
+                                end
+                                5'b00101: begin             // vfrec7.v (not supported - fpnew lacks lookup table)
+                                    instr_illegal     = 1'b1;
+                                end
+                                5'b10000: begin             // vfclass.v
+                                    mode_o.fpu.op     = CLASSIFY;
+                                    instr_illegal     = 1'b0;
+                                end
+                                default: begin
+                                    instr_illegal     = 1'b1;
+                                end
+                            endcase
                         end
 
                         /////////////////////////////
@@ -1906,11 +1920,12 @@ module vproc_decoder #(
                             widenarrow_o          = OP_WIDENING;
                         end
 
-                        {6'b110001, 3'b001}: begin        // vfwredusum VV TODO: LOGIC REQUIRED
+                        {6'b110001, 3'b001}: begin        // vfwredusum VV
                             unit_o                = UNIT_FPU;
-                            //mode_o.fpu.op         = ;
+                            mode_o.fpu.op         = ADD;
                             mode_o.fpu.op_mod     = 1'b0;
                             mode_o.fpu.op_rev     = 1'b0;
+                            mode_o.fpu.op_reduction = 1'b1;
                             mode_o.fpu.rnd_mode   = float_round_mode_i;
                             mode_o.fpu.masked     = instr_masked;
                             mode_o.fpu.src_1_narrow = 1'b1;
@@ -1931,11 +1946,12 @@ module vproc_decoder #(
                             widenarrow_o          = OP_WIDENING;
                         end
 
-                        {6'b110011, 3'b001}: begin        // vfwredosum VV TODO: LOGIC REQUIRED
+                        {6'b110011, 3'b001}: begin        // vfwredosum VV
                             unit_o                = UNIT_FPU;
-                            //mode_o.fpu.op         = ;
+                            mode_o.fpu.op         = ADD;
                             mode_o.fpu.op_mod     = 1'b0;
                             mode_o.fpu.op_rev     = 1'b0;
+                            mode_o.fpu.op_reduction = 1'b1;
                             mode_o.fpu.rnd_mode   = float_round_mode_i;
                             mode_o.fpu.masked     = instr_masked;
                             mode_o.fpu.src_1_narrow = 1'b1;
@@ -1969,11 +1985,11 @@ module vproc_decoder #(
                             widenarrow_o          = OP_WIDENING;
                         end
 
-                        {6'b111000, 3'b001},        // vfwmul VV TODO: FINISH/TEST (might need to upgrade fp_new for this)
+                        {6'b111000, 3'b001},        // vfwmul VV
                         {6'b111000, 3'b101}: begin  // vfwmul VF
                             unit_o                = UNIT_FPU;
-                            //mode_o.fpu.op         = ;
-                            mode_o.fpu.op_mod     = 1'b1;
+                            mode_o.fpu.op         = MUL;
+                            mode_o.fpu.op_mod     = 1'b0;
                             mode_o.fpu.op_rev     = 1'b0;
                             mode_o.fpu.rnd_mode   = float_round_mode_i;
                             mode_o.fpu.masked     = instr_masked;
@@ -1982,11 +1998,11 @@ module vproc_decoder #(
                             widenarrow_o          = OP_WIDENING;
                         end
 
-                        {6'b111100, 3'b001},        // vfwmacc VV TODO: FINISH/TEST(might need to upgrade fp_new for this)
+                        {6'b111100, 3'b001},        // vfwmacc VV
                         {6'b111100, 3'b101}: begin  // vfwmacc VF
                             unit_o                = UNIT_FPU;
-                            //mode_o.fpu.op         = ;
-                            mode_o.fpu.op_mod     = 1'b1;
+                            mode_o.fpu.op         = FMADD;
+                            mode_o.fpu.op_mod     = 1'b0;
                             mode_o.fpu.op_rev     = 1'b0;
                             mode_o.fpu.rnd_mode   = float_round_mode_i;
                             mode_o.fpu.masked     = instr_masked;
@@ -1995,10 +2011,10 @@ module vproc_decoder #(
                             widenarrow_o          = OP_WIDENING;
                         end
 
-                        {6'b111101, 3'b001},        // vfwnmacc VV TODO: FINISH/TEST(might need to upgrade fp_new for this)
+                        {6'b111101, 3'b001},        // vfwnmacc VV
                         {6'b111101, 3'b101}: begin  // vfwnmacc VF
                             unit_o                = UNIT_FPU;
-                            //mode_o.fpu.op         = ;
+                            mode_o.fpu.op         = FNMSUB;
                             mode_o.fpu.op_mod     = 1'b1;
                             mode_o.fpu.op_rev     = 1'b0;
                             mode_o.fpu.rnd_mode   = float_round_mode_i;
@@ -2008,10 +2024,10 @@ module vproc_decoder #(
                             widenarrow_o          = OP_WIDENING;
                         end
 
-                        {6'b111110, 3'b001},        // vfwmsac VV TODO: FINISH/TEST(might need to upgrade fp_new for this)
+                        {6'b111110, 3'b001},        // vfwmsac VV
                         {6'b111110, 3'b101}: begin  // vfwmsac VF
                             unit_o                = UNIT_FPU;
-                            mode_o.fpu.op         = ADD;
+                            mode_o.fpu.op         = FMADD;
                             mode_o.fpu.op_mod     = 1'b1;
                             mode_o.fpu.op_rev     = 1'b0;
                             mode_o.fpu.rnd_mode   = float_round_mode_i;
@@ -2021,11 +2037,11 @@ module vproc_decoder #(
                             widenarrow_o          = OP_WIDENING;
                         end
 
-                        {6'b111111, 3'b001},        // vfwnmsac VV TODO: FINISH/TEST(might need to upgrade fp_new for this)
+                        {6'b111111, 3'b001},        // vfwnmsac VV
                         {6'b111111, 3'b101}: begin  // vfwnmsac VF
                             unit_o                = UNIT_FPU;
-                            mode_o.fpu.op         = ADD;
-                            mode_o.fpu.op_mod     = 1'b1;
+                            mode_o.fpu.op         = FNMSUB;
+                            mode_o.fpu.op_mod     = 1'b0;
                             mode_o.fpu.op_rev     = 1'b0;
                             mode_o.fpu.rnd_mode   = float_round_mode_i;
                             mode_o.fpu.masked     = instr_masked;

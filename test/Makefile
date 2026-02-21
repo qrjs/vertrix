@@ -189,7 +189,7 @@ $(TESTS_ALL): %: $$(addsuffix .vmem,$$(basename $$(if $$(wildcard %),$$(wildcard
 	obj="$(abspath $(^:%.c=%.o))";                                            \
 	log="$${prog}_build.log";                                                 \
 	make -f $(TEST_DIR)/../sw/Makefile PROG=$$prog OBJ="$$obj"                \
-	    COMPILER=gcc >$$log 2>&1;                                             \
+	    COMPILER=gcc RISCV_ZVE32F=$(RISCV_ZVE32F) >$$log 2>&1;              \
 	if [ $$? -ne 0 ]; then                                                    \
 	    printf "\033[0;31m[FAIL]\033[0;0m $@ build error; log file $$log:\n"; \
 	    cat $$log;                                                            \
