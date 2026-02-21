@@ -89,6 +89,7 @@ module vproc_fpu #(
 
 
     logic [FPU_OP_W  -1:0] operand_0_fpu, operand_1_fpu, operand_2_fpu;
+    logic [FPU_OP_W  -1:0] fpu_raw_result;  // raw fpnew output before rsqrt correction
 
     // Per-lane active mask derived from input-side VL (fixes vl>1 deadlock)
     logic [FPU_OP_W/8-1:0]  fpu_in_vl_mask;
@@ -132,7 +133,7 @@ module vproc_fpu #(
             pipe_out_ctrl_o  = unit_ctrl_q;
             pipe_out_ctrl_o.last_cycle = last_cycle;
         end
-        reduction_buffer_d = pipe_out_res_o[31:0];
+        reduction_buffer_d = fpu_raw_result[31:0];
     end
 
     ///////////////////////////////////////////////////////////////////////////
@@ -283,7 +284,7 @@ module vproc_fpu #(
             end
             RSQRT_SQRT_WAIT: begin
                 if (all_rsqrt_lanes_valid) begin
-                    rsqrt_buffer_d = pipe_out_res_o;
+                    rsqrt_buffer_d = fpu_raw_result;
                     rsqrt_state_d  = RSQRT_DIV_PEND;
                 end
             end
@@ -475,7 +476,7 @@ module vproc_fpu #(
                                     (rsqrt_active ? 1'b0 : (data_valid_i_q & fpu_active_lanes[g]))),
                     .in_ready_o    (pipe_in_ready_fpu[g]),
                     .flush_i       (~sync_rst_ni),
-                    .result_o      (pipe_out_res_o[32*g +: 32]),
+                    .result_o      (fpu_raw_result[32*g +: 32]),
                     .status_o      (),
                     .tag_o         (unit_out_fpu_tag[g]),
                     .out_valid_o   (pipe_out_valid_fpu[g]),
@@ -486,4 +487,20 @@ module vproc_fpu #(
 
         end
     endgenerate
+
+    // Correct rsqrt(±0) output: the merged divsqrt normalizer incorrectly
+    // decrements the exponent for div-by-zero infinity, producing 0x7F000000
+    // instead of 0x7F800000.  When the sqrt phase produced ±0, override the
+    // DIV result with ±Inf (sign preserved from sqrt output).
+    always_comb begin
+        pipe_out_res_o = fpu_raw_result;
+        if (rsqrt_state_q == RSQRT_DIV_WAIT) begin
+            for (int g = 0; g < FPU_OP_W / 32; g++) begin
+                if (rsqrt_buffer_q[32*g+30 -: 31] == 31'b0) begin
+                    pipe_out_res_o[32*g +: 32] = {rsqrt_buffer_q[32*g+31], 8'hFF, 23'b0};
+                end
+            end
+        end
+    end
+
 endmodule

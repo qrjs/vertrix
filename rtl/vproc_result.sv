@@ -347,17 +347,6 @@ module vproc_result #(
     end
 
 
-// synthesis translate_off
-    always @(posedge clk_i) begin
-        if (result_valid_o || result_lsu_valid_i || result_xreg_valid_i || result_empty_valid_i) begin
-            $display("RESULT_DBG cyc=%0t next_id=%0d src=%0d valid=%b ready=%b we=%b id=%0d lsu_v=%b lsu_id=%0d lsu_buf=%08b empty_buf=%08b xreg_v=%b xreg_id=%0d",
-                $time, next_id_q, result_source, result_valid_o, result_ready_i, result_we_o, result_id_o,
-                result_lsu_valid_i, result_lsu_id_i, lsu_buf_valid_q, instr_result_empty_q,
-                result_xreg_valid_i, result_xreg_id_i);
-        end
-    end
-// synthesis translate_on
-
 `ifdef VPROC_SVA
 `include "vproc_result_sva.svh"
 `endif

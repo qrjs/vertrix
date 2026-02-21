@@ -14,11 +14,10 @@ vdata_end:
 vref_start:
 expected:
     // SEW=8 is illegal for FP widening operations (no FP8 format).
-    // Vicuna does not trap; the instruction executes with undefined format
-    // selection (default FP32), producing garbage.  The widened SEW=16
-    // result occupies only the lower 2 words (4 elements * 16 bits).
-    // The upper 2 words retain the sentinel.
-    .word 0x00000000, 0x00000000, 0xDEADBEEF, 0xDEADBEEF
+    // The decoder flags this as an illegal instruction (vsew_o = VSEW_INVALID),
+    // so the widening FP multiply is never dispatched to the vector pipeline.
+    // v4 retains its original sentinel values.
+    .word 0xDEADBEEF, 0xDEADBEEF, 0xDEADBEEF, 0xDEADBEEF
 vref_end:
 
     .section .text

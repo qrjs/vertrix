@@ -2339,7 +2339,7 @@ module vproc_decoder #(
             end else if (widenarrow_o == OP_WIDENING) begin
 
                 unique case (vsew_i)
-                    VSEW_8:  vsew_o = VSEW_16; //Possible if converting from int8 to fp16
+                    VSEW_8:  vsew_o = VSEW_INVALID; // No FP8 format; SEW=8 is illegal for FP widening
                     VSEW_16: vsew_o = VSEW_32;
                     default: ;
                 endcase

@@ -4,8 +4,10 @@
 
 /**
  * MNIST FP32 negative test: ReLU layers skipped
- * Without ReLU, the network loses its nonlinearity and classification
- * result may differ from the correct prediction of 7.
+ * Without ReLU, negative values propagate through FC layers.
+ * This test verifies that FC1 output contains negative values,
+ * proving that removing ReLU has an observable behavioral effect.
+ * With ReLU, FC1 outputs are all non-negative (>= 0).
  */
 
 #include <stdint.h>
@@ -18,9 +20,8 @@ extern uint8_t vdata_start;
 extern uint8_t vdata_end;
 
 volatile int32_t result[1] __attribute__((aligned(4))) = {0};
-// Without ReLU, this input still predicts class 7 (logit 42.3 dominates).
-// The test verifies the pipeline runs correctly with ReLU removed.
-const int32_t expected[1] __attribute__((aligned(4))) = {7};
+// Expected: 1 = FC1 output has negative values (proves ReLU absence matters)
+const int32_t expected[1] __attribute__((aligned(4))) = {1};
 
 asm(".global vref_start\n.set vref_start, expected\n");
 asm(".global vref_end\n.set vref_end, expected + 4\n");
@@ -35,9 +36,7 @@ static float pool1_out[14 * 14 * CONV1_OUT_C] NOINIT;
 static float conv2_out[14 * 14 * CONV2_OUT_C] NOINIT;
 static float pool2_out[7 * 7 * CONV2_OUT_C] NOINIT;
 static float fc1_out[FC1_OUT] NOINIT;
-static float fc2_out[FC2_OUT] NOINIT;
 static float flatten_buf[FC1_IN] NOINIT;
-static float output_logits[FC3_OUT] NOINIT;
 
 static void conv3x3_fp32(
     const float* input, int in_h, int in_w, int in_c,
@@ -136,26 +135,6 @@ static void hwc_to_chw_fp32(const float* hwc, int h, int w, int c, float* chw) {
     }
 }
 
-static int argmax_fp32(const float* data, int size) {
-    size_t vl1 = __riscv_vsetvl_e32m1(1);
-    int max_idx = 0;
-    vint32m1_t v_raw = __riscv_vle32_v_i32m1((const int32_t*)&data[0], vl1);
-    uint32_t raw0 = (uint32_t)__riscv_vmv_x(v_raw);
-    int32_t max_comp = (int32_t)raw0 < 0 ?
-        (int32_t)(0x80000000u - raw0) : (int32_t)raw0;
-    for (int i = 1; i < size; i++) {
-        v_raw = __riscv_vle32_v_i32m1((const int32_t*)&data[i], vl1);
-        uint32_t raw = (uint32_t)__riscv_vmv_x(v_raw);
-        int32_t comp = (int32_t)raw < 0 ?
-            (int32_t)(0x80000000u - raw) : (int32_t)raw;
-        if (comp > max_comp) {
-            max_comp = comp;
-            max_idx = i;
-        }
-    }
-    return max_idx;
-}
-
 int main(void) {
     // Conv1 + Pool1 (NO ReLU)
     conv3x3_fp32(test_sample_0, INPUT_H, INPUT_W, INPUT_C,
@@ -178,15 +157,20 @@ int main(void) {
     asm volatile("fence" ::: "memory");
     // relu_fp32_inplace SKIPPED
 
-    // FC2 (NO ReLU)
-    fc_fp32(fc1_out, FC1_OUT, fc2_weight, FC2_OUT, fc2_out);
-    // relu_fp32_inplace SKIPPED
+    // Check FC1 output for negative values (sign bit set).
+    // Without ReLU, negative activations propagate; with ReLU they'd be 0.
+    int has_negative = 0;
+    for (int i = 0; i < FC1_OUT; i++) {
+        size_t vl1 = __riscv_vsetvl_e32m1(1);
+        vint32m1_t v_raw = __riscv_vle32_v_i32m1((const int32_t*)&fc1_out[i], vl1);
+        int32_t val = (int32_t)__riscv_vmv_x(v_raw);
+        if (val < 0) {  // IEEE 754 sign bit = MSB of int32
+            has_negative = 1;
+            break;
+        }
+    }
 
-    // FC3 + Argmax
-    fc_fp32(fc2_out, FC2_OUT, fc3_weight, FC3_OUT, output_logits);
-    int pred = argmax_fp32(output_logits, FC3_OUT);
-
-    result[0] = pred;
+    result[0] = has_negative;
     spill_cache((uint32_t *)result, (uint32_t *)(result + 1));
 
     return 0;

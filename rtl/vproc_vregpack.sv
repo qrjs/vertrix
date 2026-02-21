@@ -411,26 +411,6 @@ module vproc_vregpack #(
     endgenerate
 
 
-// synthesis translate_off
-always @(posedge clk_i) begin
-    if (stage_valid_q) begin
-        $display("PACK_DBG cyc=%0t valid=%b store=%b stall=%b ready=%b pend_clr=%b instr_done=%b vaddr=%0d killed=%b spec=%b pend_rd=%b wr_valid=%b wr_clr=%b be=0x%04x",
-            $time, stage_valid_q, stage_state_q.res_store, stage_stall, stage_ready,
-            stage_state_q.pend_clr, stage_state_q.instr_done,
-            stage_state_q.vaddr, instr_killed, instr_speculative,
-            pending_vreg_reads_i[stage_state_q.vaddr],
-            vreg_wr_valid_o, vreg_wr_clr_o, vreg_wr_be_o);
-    end
-    if (pipe_in_valid_i & stage_ready) begin
-        $display("PACK_IN cyc=%0t store_i=%b valid_i=%b pend_clr_i=%b done_i=%b eew=%0d vaddr=%0d shift=%b elemwise=%b vreg_idx=%0d",
-            $time, pipe_in_res_store_i, pipe_in_res_valid_i, pipe_in_pend_clr_i,
-            pipe_in_instr_done_i, pipe_in_eew_i, pipe_in_vaddr_i,
-            pipe_in_res_flags_i[0].shift, pipe_in_res_flags_i[0].elemwise,
-            pipe_in_res_flags_i[0].vreg_idx);
-    end
-end
-// synthesis translate_on
-
 `ifdef VPROC_SVA
 `include "vproc_vregpack_sva.svh"
 `endif
