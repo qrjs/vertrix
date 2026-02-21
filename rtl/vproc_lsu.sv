@@ -391,7 +391,7 @@ module vproc_lsu import vproc_pkg::*; #(
 
     vproc_queue #(
         .WIDTH        ( XIF_ID_W + 7                                                          ),
-        .DEPTH        ( 2                                                                     )
+        .DEPTH        ( 2                                                                      )
     ) trans_complete_queue (
         .clk_i        ( clk_i                                                                 ),
         .async_rst_ni ( async_rst_ni                                                          ),

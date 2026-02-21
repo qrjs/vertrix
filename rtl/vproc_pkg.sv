@@ -420,4 +420,17 @@ localparam fpu_features_t RV32ZVFH = '{
     IntFmtMask:    4'b0110
 };
 
+// FPU implementation for ZVFH: ADDMUL uses MERGED so that the multi-format
+// FMA handles widening operations (FP16 src -> FP32 dst) correctly.
+// With PARALLEL, each format gets a single-format FMA that cannot handle
+// mixed src/dst formats, causing widening operands to be misinterpreted.
+localparam fpnew_pkg::fpu_implementation_t ZVFH_NOREGS = '{
+    PipeRegs:   '{default: 0},
+    UnitTypes:  '{'{default: fpnew_pkg::MERGED},   // ADDMUL
+                  '{default: fpnew_pkg::MERGED},   // DIVSQRT
+                  '{default: fpnew_pkg::PARALLEL}, // NONCOMP
+                  '{default: fpnew_pkg::MERGED}},  // CONV
+    PipeConfig: fpnew_pkg::BEFORE
+};
+
 endpackage

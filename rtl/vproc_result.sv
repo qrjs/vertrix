@@ -14,6 +14,9 @@ module vproc_result #(
         input  logic                result_empty_valid_i,
         input  logic [XIF_ID_W-1:0] result_empty_id_i,
 
+        input  logic                instr_issue_valid_i,
+        input  logic [XIF_ID_W-1:0] instr_issue_id_i,
+
         input  logic                result_lsu_valid_i,
         output logic                result_lsu_ready_o,
         input  logic [XIF_ID_W-1:0] result_lsu_id_i,
@@ -71,18 +74,27 @@ module vproc_result #(
     logic                result_csr_delayed_q, result_csr_delayed_d;
     logic [31:0]         result_csr_data_q,    result_csr_data_d;
 
+    // Per-ID LSU result buffer: always drain the FIFO queue into this buffer so
+    // that LSU results can be served in next_id order without blocking the queue
+    logic [XIF_ID_CNT-1:0] lsu_buf_valid_q, lsu_buf_valid_d;
+    logic [XIF_ID_CNT-1:0] lsu_buf_exc_q,   lsu_buf_exc_d;
+    logic [XIF_ID_CNT-1:0][5:0] lsu_buf_exccode_q, lsu_buf_exccode_d;
+
     always_ff @(posedge clk_i or negedge async_rst_ni) begin : vproc_result_buffer
         if (~async_rst_ni) begin
             instr_result_empty_q <= '0;
             result_csr_valid_q   <= 1'b0;
+            lsu_buf_valid_q      <= '0;
         end
         else if (~sync_rst_ni) begin
             instr_result_empty_q <= '0;
             result_csr_valid_q   <= 1'b0;
+            lsu_buf_valid_q      <= '0;
         end
         else begin
             instr_result_empty_q <= instr_result_empty_d;
             result_csr_valid_q   <= result_csr_valid_d;
+            lsu_buf_valid_q      <= lsu_buf_valid_d;
         end
     end
     always_ff @(posedge clk_i) begin : vproc_result
@@ -90,6 +102,8 @@ module vproc_result #(
         result_csr_addr_q    <= result_csr_addr_d;
         result_csr_delayed_q <= result_csr_delayed_d;
         result_csr_data_q    <= result_csr_data_d;
+        lsu_buf_exc_q        <= lsu_buf_exc_d;
+        lsu_buf_exccode_q    <= lsu_buf_exccode_d;
     end
 
     logic [XIF_ID_W-1:0] next_id_q, next_id_d;
@@ -132,22 +146,28 @@ module vproc_result #(
         result_source_q   <= result_source_d;
         result_empty_id_q <= result_empty_id_d;
     end
+
+    // whether an LSU result is available for next_id (buffered or arriving this cycle)
+    logic lsu_result_avail;
+    assign lsu_result_avail = lsu_buf_valid_q[next_id_q] |
+                              (result_lsu_valid_i & (result_lsu_id_i == next_id_q));
+
     result_source_e      result_source;
     logic [XIF_ID_W-1:0] result_empty_id;
     always_comb begin
         result_source   = RESULT_SOURCE_NONE;
         result_empty_id = DONT_CARE_ZERO ? '0 : 'x;
 
-        // LSU always takes precedence (potentially oldest instruction)
-        if (result_lsu_valid_i) begin
+        // LSU takes precedence when a result for next_id is available (buffered or direct)
+        if (lsu_result_avail) begin
             result_source = RESULT_SOURCE_LSU;
         end
-        // XREG goes second (usually also old instruction)
-        else if (result_xreg_valid_i) begin
+        // XREG goes second, only when ID matches
+        else if (result_xreg_valid_i & (result_xreg_id_i == next_id_q)) begin
             result_source = RESULT_SOURCE_XREG;
         end
         // CSR goes third
-        else if (result_csr_valid_q) begin
+        else if (result_csr_valid_q & (result_csr_id_q == next_id_q)) begin
             result_source = RESULT_SOURCE_CSR_BUF;
         end
         // buffered empty results follow
@@ -159,11 +179,16 @@ module vproc_result #(
             result_source = RESULT_SOURCE_EMPTY;
         end
 
-        // select the lowest instruction ID for which an empty result must be returned //possible issue on overflow/wraparound to id 0
-        for (int i = 0; i < XIF_ID_CNT; i++) begin
-            if (instr_result_empty_q[i]) begin
-                result_empty_id = XIF_ID_W'(i);
-                break;
+        // select the empty result ID: prefer next_id_q so we can advance in-order;
+        // fall back to lowest set bit for buffering/holding purposes
+        if (instr_result_empty_q[next_id_q]) begin
+            result_empty_id = next_id_q;
+        end else begin
+            for (int i = 0; i < XIF_ID_CNT; i++) begin
+                if (instr_result_empty_q[i]) begin
+                    result_empty_id = XIF_ID_W'(i);
+                    break;
+                end
             end
         end
 
@@ -191,6 +216,9 @@ module vproc_result #(
         result_csr_addr_d    = result_csr_addr_q;
         result_csr_delayed_d = result_csr_delayed_q;
         result_csr_data_d    = result_csr_data_q;
+        lsu_buf_valid_d      = lsu_buf_valid_q;
+        lsu_buf_exc_d        = lsu_buf_exc_q;
+        lsu_buf_exccode_d    = lsu_buf_exccode_q;
 
         // for a delayed result the data is always available in the cycle after the result was
         // received, but if the interface is not ready to return that result yet, the data has to
@@ -208,6 +236,18 @@ module vproc_result #(
             result_csr_valid_d = ~result_ready_i || !(result_csr_id_q == next_id_q);
         end
 
+        // Always buffer incoming LSU results from the queue into the per-ID buffer
+        if (result_lsu_valid_i) begin
+            lsu_buf_valid_d[result_lsu_id_i]   = 1'b1;
+            lsu_buf_exc_d[result_lsu_id_i]     = result_lsu_exc_i;
+            lsu_buf_exccode_d[result_lsu_id_i] = result_lsu_exccode_i;
+        end
+
+        // Clear LSU buffer entry when result is served
+        if (result_source == RESULT_SOURCE_LSU && result_ready_i) begin
+            lsu_buf_valid_d[next_id_q] = 1'b0;
+        end
+
         // instr ID is added to buffer if another result takes precedence or XIF iface is not ready or current instruction is not the next one to be retired
         if (result_empty_valid_i & ((result_source != RESULT_SOURCE_EMPTY) | ~result_ready_i | result_empty_id_i != next_id_q)) begin
             instr_result_empty_d[result_empty_id_i] = 1'b1;
@@ -220,9 +260,18 @@ module vproc_result #(
             result_csr_delayed_d = result_csr_delayed_i;
             result_csr_data_d    = result_csr_data_i;
         end
+
+        // clear stale buffer entries when instruction ID is recycled;
+        // this MUST be the last assignment to instr_result_empty_d and lsu_buf_valid_d
+        // so the clear overrides any buffering set for the same (recycled) ID in the same cycle
+        if (instr_issue_valid_i) begin
+            instr_result_empty_d[instr_issue_id_i] = 1'b0;
+            lsu_buf_valid_d[instr_issue_id_i]      = 1'b0;
+        end
     end
 
-    assign result_lsu_ready_o  =  (result_source == RESULT_SOURCE_LSU    ) & result_ready_i;
+    // Always drain the LSU queue; results are buffered per-ID above
+    assign result_lsu_ready_o  = 1'b1;
     assign result_xreg_ready_o =  (result_source == RESULT_SOURCE_XREG   ) & result_ready_i;
     assign result_csr_ready_o  = ((result_source == RESULT_SOURCE_CSR_BUF) & result_ready_i) | ~result_csr_valid_q;
 
@@ -260,25 +309,27 @@ module vproc_result #(
 
         unique case (result_source)
             RESULT_SOURCE_EMPTY: begin
-                result_valid_o = result_empty_id_i == next_id_q; //only raise result valid if current instruction is the one the scalar core is waiting for (no out of order retiring)
-                //result_valid_o = '1;
+                result_valid_o = result_empty_id_i == next_id_q;
                 result_id_o    = result_empty_id_i;
             end
             RESULT_SOURCE_EMPTY_BUF: begin
                 result_valid_o = result_empty_id == next_id_q;
-                //result_valid_o = '1;
                 result_id_o    = result_empty_id;
             end
             RESULT_SOURCE_LSU: begin
-                result_valid_o   = result_lsu_id_i == next_id_q;
-                //result_valid_o = '1;
-                result_id_o      = result_lsu_id_i;
-                result_exc_o     = result_lsu_exc_i;
-                result_exccode_o = result_lsu_exccode_i;
+                result_valid_o   = 1'b1; // lsu_result_avail already ensures ID match
+                result_id_o      = next_id_q;
+                // serve from buffer if available, otherwise bypass from queue input
+                if (lsu_buf_valid_q[next_id_q]) begin
+                    result_exc_o     = lsu_buf_exc_q[next_id_q];
+                    result_exccode_o = lsu_buf_exccode_q[next_id_q];
+                end else begin
+                    result_exc_o     = result_lsu_exc_i;
+                    result_exccode_o = result_lsu_exccode_i;
+                end
             end
             RESULT_SOURCE_XREG: begin
                 result_valid_o = result_xreg_id_i == next_id_q;
-                //result_valid_o = '1;
                 result_id_o    = result_xreg_id_i;
                 result_data_o  = result_xreg_data_i;
                 result_rd_o    = result_xreg_addr_i;
@@ -286,7 +337,6 @@ module vproc_result #(
             end
             RESULT_SOURCE_CSR_BUF: begin
                 result_valid_o = result_csr_id_q == next_id_q;
-                //result_valid_o = '1;
                 result_id_o    = result_csr_id_q;
                 result_data_o  = result_csr_delayed_q ? result_csr_data_delayed_i : result_csr_data_q;
                 result_rd_o    = result_csr_addr_q;
@@ -296,6 +346,17 @@ module vproc_result #(
         endcase
     end
 
+
+// synthesis translate_off
+    always @(posedge clk_i) begin
+        if (result_valid_o || result_lsu_valid_i || result_xreg_valid_i || result_empty_valid_i) begin
+            $display("RESULT_DBG cyc=%0t next_id=%0d src=%0d valid=%b ready=%b we=%b id=%0d lsu_v=%b lsu_id=%0d lsu_buf=%08b empty_buf=%08b xreg_v=%b xreg_id=%0d",
+                $time, next_id_q, result_source, result_valid_o, result_ready_i, result_we_o, result_id_o,
+                result_lsu_valid_i, result_lsu_id_i, lsu_buf_valid_q, instr_result_empty_q,
+                result_xreg_valid_i, result_xreg_id_i);
+        end
+    end
+// synthesis translate_on
 
 `ifdef VPROC_SVA
 `include "vproc_result_sva.svh"

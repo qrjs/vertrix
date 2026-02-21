@@ -33,3 +33,5 @@ vproc_config.sv
 /matrix/.humanize*
 /.humanize/
 sw/__pycache__/
+*.bak
+test/kernel/test_configs_mnist_fast.conf

@@ -1017,6 +1017,8 @@ module vproc_core import vproc_pkg::*; #(
         .sync_rst_ni               ( sync_rst_n                 ),
         .result_empty_valid_i      ( result_empty_valid         ),
         .result_empty_id_i         ( result_empty_id            ),
+        .instr_issue_valid_i       ( instr_offload              ),
+        .instr_issue_id_i          ( issue_id_i                 ),
         .result_lsu_valid_i        ( lsu_trans_complete_valid   ),
         .result_lsu_ready_o        ( lsu_trans_complete_ready   ),
         .result_lsu_id_i           ( lsu_trans_complete_id      ),

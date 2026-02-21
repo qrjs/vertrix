@@ -77,6 +77,12 @@ SECTIONS
         _bss_end = .;
     } >ram
 
+    .noinit (NOLOAD) : {
+        . = ALIGN(64);
+        *(.noinit)
+        *(.noinit.*)
+    } >ram
+
     .user_align (NOLOAD) : {
         . = ALIGN(0x1000);
         _user_start = .;

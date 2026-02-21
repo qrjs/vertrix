@@ -12,7 +12,11 @@ module vproc_fpu #(
         parameter fpnew_pkg::fpu_features_t       FPU_FEATURES       = fpnew_pkg::RV32F,           //TODO:Need to pass these all the way to the top level for easy adjustments
         `endif
         
-        parameter fpnew_pkg::fpu_implementation_t FPU_IMPLEMENTATION = fpnew_pkg::DEFAULT_NOREGS   //TODO:Need to pass these all the way to the top level for easy adjustments 
+        `ifdef RISCV_ZVFH
+        parameter fpnew_pkg::fpu_implementation_t FPU_IMPLEMENTATION = vproc_pkg::ZVFH_NOREGS
+        `else
+        parameter fpnew_pkg::fpu_implementation_t FPU_IMPLEMENTATION = fpnew_pkg::DEFAULT_NOREGS
+        `endif
             )(
         input  logic                  clk_i,
         input  logic                  async_rst_ni,
@@ -115,10 +119,18 @@ module vproc_fpu #(
             pipe_in_ready_o  = 1'b0;  // block upstream during 2-phase rsqrt
             pipe_out_valid_o = (rsqrt_state_q == RSQRT_DIV_WAIT) & all_rsqrt_lanes_valid;
             pipe_out_ctrl_o  = rsqrt_tag_q.ctrl;
-        end else begin
+        end else if (|fpu_active_lanes) begin
+            // Normal path: at least one FPU lane is active
             pipe_in_ready_o  = &(pipe_in_ready_fpu | ~fpu_active_lanes);
             pipe_out_valid_o = all_active_lanes_valid & (~unit_out_fpu_tag[0].ctrl.mode.fpu.op_reduction | unit_out_fpu_tag[0].last_cycle);
             pipe_out_ctrl_o  = unit_out_fpu_tag[0].ctrl;
+        end else begin
+            // No FPU lanes active (VL < VLMAX inactive beat): pass through
+            // immediately with correct metadata from input register, not stale fpnew tags
+            pipe_in_ready_o  = 1'b1;
+            pipe_out_valid_o = data_valid_i_q;
+            pipe_out_ctrl_o  = unit_ctrl_q;
+            pipe_out_ctrl_o.last_cycle = last_cycle;
         end
         reduction_buffer_d = pipe_out_res_o[31:0];
     end
@@ -415,6 +427,19 @@ module vproc_fpu #(
             operand_2_fpu = '0;
         end
 
+        // NaN-box FP16 operands for widening operations.
+        // When src_fmt=FP16 and vectorial_op=0 (widening FP16->FP32), each
+        // 32-bit element contains a zero-extended FP16 value in the lower 16
+        // bits.  fpnew requires NaN-boxing (upper bits = 0xFFFF) for
+        // non-vectorial FP16 operands; without it the classifier treats them
+        // as NaN and produces incorrect results.
+        if (src_fmt == FP16 && !vectorial_op) begin
+            for (int g = 0; g < FPU_OP_W / 32; g++) begin
+                operand_0_fpu[32*g+16 +: 16] = 16'hFFFF;
+                operand_1_fpu[32*g+16 +: 16] = 16'hFFFF;
+            end
+        end
+
     end
 
     ///////////////////////////////////////////////////////////////////////////
@@ -458,7 +483,7 @@ module vproc_fpu #(
                     .busy_o        ()
                 );
 
-            
+
         end
     endgenerate
 endmodule
