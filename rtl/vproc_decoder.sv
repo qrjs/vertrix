@@ -1932,7 +1932,7 @@ module vproc_decoder #(
                             mode_o.fpu.op_reduction = 1'b1;
                             mode_o.fpu.rnd_mode   = float_round_mode_i;
                             mode_o.fpu.masked     = instr_masked;
-                            mode_o.fpu.src_1_narrow = 1'b1;
+                            mode_o.fpu.src_1_narrow = 1'b0;  // accumulator (vs1) stays at dest width FP32
                             mode_o.fpu.src_2_narrow = 1'b1;
                             widenarrow_o          = OP_WIDENING;
                         end
@@ -1958,7 +1958,7 @@ module vproc_decoder #(
                             mode_o.fpu.op_reduction = 1'b1;
                             mode_o.fpu.rnd_mode   = float_round_mode_i;
                             mode_o.fpu.masked     = instr_masked;
-                            mode_o.fpu.src_1_narrow = 1'b1;
+                            mode_o.fpu.src_1_narrow = 1'b0;  // accumulator (vs1) stays at dest width FP32
                             mode_o.fpu.src_2_narrow = 1'b1;
                             widenarrow_o          = OP_WIDENING;
                         end

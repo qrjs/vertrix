@@ -91,6 +91,15 @@ module vproc_fpu #(
     logic [FPU_OP_W  -1:0] operand_0_fpu, operand_1_fpu, operand_2_fpu;
     logic [FPU_OP_W  -1:0] fpu_raw_result;  // raw fpnew output before rsqrt correction
 
+    // Widening reduction: ADD with src_fmt != dst_fmt (FP16 vs2 + FP32 acc).
+    // fpnew ADD uses src_fmt for both operands, so the FP32 accumulator would
+    // be misinterpreted as FP16.  Override to FMADD(1.0_FP16, vs2_FP16, acc_FP32)
+    // so fpnew uses dst_fmt for operand_c (the accumulator).
+    logic widen_reduction;
+    assign widen_reduction = unit_ctrl_q.mode.fpu.op_reduction
+                           & (unit_ctrl_q.mode.fpu.op == ADD)
+                           & (src_fmt != dst_fmt);
+
     // Per-lane active mask derived from input-side VL (fixes vl>1 deadlock)
     logic [FPU_OP_W/8-1:0]  fpu_in_vl_mask;
     logic [FPU_OP_W/32-1:0] fpu_active_lanes;
@@ -101,7 +110,7 @@ module vproc_fpu #(
     ///////////////////////////////////////////////////////////////////////////
     //Input Connections - Connect to buffers
     ///////////////////////////////////////////////////////////////////////////
-    always_comb begin                                                
+    always_comb begin
             unit_ctrl_d     = pipe_in_ctrl_i;
             data_valid_i_d  = pipe_in_valid_i;
             pipe_in_op1_i_d = pipe_in_op1_i;
@@ -127,8 +136,10 @@ module vproc_fpu #(
             pipe_out_ctrl_o  = unit_out_fpu_tag[0].ctrl;
         end else begin
             // No FPU lanes active (VL < VLMAX inactive beat): pass through
-            // immediately with correct metadata from input register, not stale fpnew tags
-            pipe_in_ready_o  = 1'b1;
+            // with correct metadata from input register, not stale fpnew tags.
+            // Respect backpressure: only accept new input when downstream is ready
+            // or no valid beat is pending, to avoid overwriting registered state.
+            pipe_in_ready_o  = ~data_valid_i_q | pipe_out_ready_i;
             pipe_out_valid_o = data_valid_i_q;
             pipe_out_ctrl_o  = unit_ctrl_q;
             pipe_out_ctrl_o.last_cycle = last_cycle;
@@ -162,6 +173,13 @@ module vproc_fpu #(
             end
             //Widening From SEW16
             {VSEW_32, 1'b1, 1'b1} : begin
+                src_fmt = FP16;
+                dst_fmt = FP32;
+                int_fmt = INT32;
+                vectorial_op = 0;
+            end
+            //Widening reduction: accumulator (vs1) full-width FP32, vector source (vs2) narrow FP16
+            {VSEW_32, 1'b0, 1'b1} : begin
                 src_fmt = FP16;
                 dst_fmt = FP32;
                 int_fmt = INT32;
@@ -276,7 +294,8 @@ module vproc_fpu #(
             RSQRT_IDLE: begin
                 if (data_valid_i_q
                     & (unit_ctrl_q.mode.fpu.op == SQRT)
-                    & (unit_ctrl_q.mode.fpu.op_mod == 1'b1)) begin
+                    & (unit_ctrl_q.mode.fpu.op_mod == 1'b1)
+                    & (&(pipe_in_ready_fpu | ~fpu_active_lanes))) begin
                     rsqrt_state_d        = RSQRT_SQRT_WAIT;
                     rsqrt_tag_d          = unit_in_fpu_tag;
                     rsqrt_active_lanes_d = fpu_active_lanes;
@@ -332,9 +351,21 @@ module vproc_fpu #(
 
 
         if (unit_ctrl_q.mode.fpu.op_reduction == 1'b1 & unit_ctrl_q.mode.fpu.op == ADD) begin
-            if(unit_ctrl_q.first_cycle == 1'b1) begin
+            if (widen_reduction) begin
+                // Widening reduction: use FMADD(1.0_FP16, vs2_FP16, acc_FP32)
+                // operand_0 (a) = 1.0 in FP16, operand_1 (b) = vs2 element FP16,
+                // operand_2 (c) = accumulator FP32 (uses dst_fmt via fpnew FMADD)
+                operand_0_fpu = {(FPU_OP_W/32){32'h00003C00}};  // FP16 1.0 per lane (NaN-boxed later)
+                if (unit_ctrl_q.first_cycle == 1'b1) begin
+                    operand_1_fpu = {'0, pipe_in_op2_i_q[31:0]};  // vs2 element (FP16)
+                    operand_2_fpu = {'0, pipe_in_op1_i_q[31:0]};  // vs1 accumulator (FP32)
+                end else begin
+                    operand_1_fpu = {'0, pipe_in_op2_i_q[31:0]};  // vs2 element (FP16)
+                    operand_2_fpu = {'0, reduction_buffer_q[31:0]}; // reduction accumulator (FP32)
+                end
+            end else if(unit_ctrl_q.first_cycle == 1'b1) begin
                 operand_0_fpu = '0;//This operand is unused by these operations;
-                operand_1_fpu = {'0, pipe_in_op1_i_q[31:0]};//First cycle of reduction operation uses vs1[0]  //TODO: MAKE THESE GENERIC
+                operand_1_fpu = {'0, pipe_in_op1_i_q[31:0]};//First cycle of reduction operation uses vs1[0]
                 operand_2_fpu = {'0, pipe_in_op2_i_q[31:0]};
 
             end else begin
@@ -464,7 +495,8 @@ module vproc_fpu #(
                     .rst_ni        (async_rst_ni),          
                     .operands_i    ({operand_2_fpu[32*g +: 32], operand_1_fpu[32*g +: 32], operand_0_fpu[32*g +: 32]}),  
                     .rnd_mode_i    (rsqrt_div_valid ? rsqrt_tag_q.ctrl.mode.fpu.rnd_mode : unit_ctrl_q.mode.fpu.rnd_mode),
-                    .op_i          (rsqrt_div_valid ? fpnew_pkg::DIV : unit_ctrl_q.mode.fpu.op),
+                    .op_i          (rsqrt_div_valid ? fpnew_pkg::DIV :
+                                    widen_reduction ? fpnew_pkg::FMADD : unit_ctrl_q.mode.fpu.op),
                     .op_mod_i      ((rsqrt_div_valid | unit_ctrl_q.mode.fpu.op == DIV | unit_ctrl_q.mode.fpu.op == SQRT) ? 1'b0 : unit_ctrl_q.mode.fpu.op_mod),
                     .src_fmt_i     (rsqrt_div_valid ? fpnew_pkg::FP32 : src_fmt),
                     .dst_fmt_i     (rsqrt_div_valid ? fpnew_pkg::FP32 : dst_fmt),
