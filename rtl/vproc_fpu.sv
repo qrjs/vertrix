@@ -105,8 +105,6 @@ module vproc_fpu #(
     logic [FPU_OP_W/32-1:0] fpu_active_lanes;
     logic                    all_active_lanes_valid;
 
-
-
     ///////////////////////////////////////////////////////////////////////////
     //Input Connections - Connect to buffers
     ///////////////////////////////////////////////////////////////////////////
@@ -171,14 +169,8 @@ module vproc_fpu #(
                 int_fmt = INT16;
                 vectorial_op = 1;
             end
-            //Widening From SEW16
-            {VSEW_32, 1'b1, 1'b1} : begin
-                src_fmt = FP16;
-                dst_fmt = FP32;
-                int_fmt = INT32;
-                vectorial_op = 0;
-            end
-            //Widening reduction: accumulator (vs1) full-width FP32, vector source (vs2) narrow FP16
+            //Widening from SEW16 (both sources narrow, or only vs2 narrow for widening reduction)
+            {VSEW_32, 1'b1, 1'b1},
             {VSEW_32, 1'b0, 1'b1} : begin
                 src_fmt = FP16;
                 dst_fmt = FP32;
@@ -357,20 +349,14 @@ module vproc_fpu #(
         operand_1_fpu = '0;
         operand_2_fpu = '0;
 
-
         if (unit_ctrl_q.mode.fpu.op_reduction == 1'b1 & unit_ctrl_q.mode.fpu.op == ADD) begin
             if (widen_reduction) begin
                 // Widening reduction: use FMADD(1.0_FP16, vs2_FP16, acc_FP32)
-                // operand_0 (a) = 1.0 in FP16, operand_1 (b) = vs2 element FP16,
-                // operand_2 (c) = accumulator FP32 (uses dst_fmt via fpnew FMADD)
                 operand_0_fpu = {(FPU_OP_W/32){32'h00003C00}};  // FP16 1.0 per lane (NaN-boxed later)
-                if (unit_ctrl_q.first_cycle == 1'b1) begin
-                    operand_1_fpu = {'0, pipe_in_op2_i_q[31:0]};  // vs2 element (FP16)
-                    operand_2_fpu = {'0, pipe_in_op1_i_q[31:0]};  // vs1 accumulator (FP32)
-                end else begin
-                    operand_1_fpu = {'0, pipe_in_op2_i_q[31:0]};  // vs2 element (FP16)
-                    operand_2_fpu = {'0, reduction_buffer_q[31:0]}; // reduction accumulator (FP32)
-                end
+                operand_1_fpu = {'0, pipe_in_op2_i_q[31:0]};     // vs2 element (FP16)
+                operand_2_fpu = unit_ctrl_q.first_cycle ?
+                    {'0, pipe_in_op1_i_q[31:0]} :                 // vs1 accumulator (FP32)
+                    {'0, reduction_buffer_q[31:0]};               // reduction accumulator (FP32)
             end else if(unit_ctrl_q.first_cycle == 1'b1) begin
                 operand_0_fpu = '0;//This operand is unused by these operations;
                 operand_1_fpu = {'0, pipe_in_op1_i_q[31:0]};//First cycle of reduction operation uses vs1[0]
@@ -526,7 +512,6 @@ module vproc_fpu #(
                     .out_ready_i   (fpu_out_ready),
                     .busy_o        ()
                 );
-
 
         end
     endgenerate
