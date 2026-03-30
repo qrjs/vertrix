@@ -202,7 +202,7 @@ module fpnew_noncomp #(
       fpnew_pkg::RTZ: sgnj_result.sign = ~sign_b;         // SGNJN
       fpnew_pkg::RDN: sgnj_result.sign = sign_a ^ sign_b; // SGNJX
       fpnew_pkg::RUP: sgnj_result      = operand_a;       // passthrough
-      default: sgnj_result = '{default: fpnew_pkg::DONT_CARE}; // don't care
+      default: sgnj_result = '1; // don't care
     endcase
   end
 
@@ -238,7 +238,7 @@ module fpnew_noncomp #(
       unique case (inp_pipe_rnd_mode_q[NUM_INP_REGS])
         fpnew_pkg::RNE: minmax_result = operand_a_smaller ? operand_a : operand_b; // MIN
         fpnew_pkg::RTZ: minmax_result = operand_a_smaller ? operand_b : operand_a; // MAX
-        default: minmax_result = '{default: fpnew_pkg::DONT_CARE}; // don't care
+        default: minmax_result = '1; // don't care
       endcase
     end
   end
@@ -263,23 +263,26 @@ module fpnew_noncomp #(
     // Signalling NaNs always compare as false (except for "not equal" compares) and are illegal
     if (signalling_nan) begin
       cmp_status.NV = 1'b1; // invalid operation
-      cmp_result    = inp_pipe_rnd_mode_q[NUM_INP_REGS] == fpnew_pkg::RDN && inp_pipe_op_mod_q[NUM_INP_REGS];
+      cmp_result.mantissa[0] = (inp_pipe_rnd_mode_q[NUM_INP_REGS] == fpnew_pkg::RDN)
+                               && inp_pipe_op_mod_q[NUM_INP_REGS];
     // Otherwise do comparisons
     end else begin
       unique case (inp_pipe_rnd_mode_q[NUM_INP_REGS])
         fpnew_pkg::RNE: begin // Less than or equal
           if (any_operand_nan) cmp_status.NV = 1'b1; // Signalling comparison: NaNs are invalid
-          else cmp_result = (operand_a_smaller | operands_equal) ^ inp_pipe_op_mod_q[NUM_INP_REGS];
+          else cmp_result.mantissa[0] = (operand_a_smaller | operands_equal)
+                                        ^ inp_pipe_op_mod_q[NUM_INP_REGS];
         end
         fpnew_pkg::RTZ: begin // Less than
           if (any_operand_nan) cmp_status.NV = 1'b1; // Signalling comparison: NaNs are invalid
-          else cmp_result = (operand_a_smaller & ~operands_equal) ^ inp_pipe_op_mod_q[NUM_INP_REGS];
+          else cmp_result.mantissa[0] = (operand_a_smaller & ~operands_equal)
+                                        ^ inp_pipe_op_mod_q[NUM_INP_REGS];
         end
         fpnew_pkg::RDN: begin // Equal
-          if (any_operand_nan) cmp_result = inp_pipe_op_mod_q[NUM_INP_REGS]; // NaN always not equal
-          else cmp_result = operands_equal ^ inp_pipe_op_mod_q[NUM_INP_REGS];
+          if (any_operand_nan) cmp_result.mantissa[0] = inp_pipe_op_mod_q[NUM_INP_REGS]; // NaN always not equal
+          else cmp_result.mantissa[0] = operands_equal ^ inp_pipe_op_mod_q[NUM_INP_REGS];
         end
-        default: cmp_result = '{default: fpnew_pkg::DONT_CARE}; // don't care
+        default: cmp_result = '1; // don't care
       endcase
     end
   end
@@ -340,14 +343,14 @@ module fpnew_noncomp #(
         extension_bit_d = cmp_extension_bit;
       end
       fpnew_pkg::CLASSIFY: begin
-        result_d        = '{default: fpnew_pkg::DONT_CARE}; // unused
+        result_d        = '1; // unused
         status_d        = class_status;
         extension_bit_d = class_extension_bit;
       end
       default: begin
-        result_d        = '{default: fpnew_pkg::DONT_CARE}; // dont care
-        status_d        = '{default: fpnew_pkg::DONT_CARE}; // dont care
-        extension_bit_d = fpnew_pkg::DONT_CARE;             // dont care
+        result_d        = '1;   // dont care
+        status_d        = '1;   // dont care
+        extension_bit_d = 1'b1; // dont care
       end
     endcase
   end

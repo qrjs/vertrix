@@ -528,15 +528,18 @@ module vproc_pipeline_wrapper import vproc_pkg::*; #(
             state_init.op_vaddr[                OP_CNT-2    ]          = pipe_in_data_i.rs2.r.vaddr;
             state_init.op_flags[                OP_CNT-1    ].elemwise = 1'b1;
         end
-         if (unit_fpu) begin
+        if (unit_fpu) begin
             //For widening ops always pad with 0s
             state_init.op_flags[0].sigext                   = 1'b0;
             state_init.op_flags[1].sigext                   = 1'b0;
+            state_init.op_flags[0].narrow                   = pipe_in_data_i.mode.fpu.src_2_narrow;
+            state_init.op_flags[1].narrow                   = pipe_in_data_i.mode.fpu.src_1_narrow;
             state_init.op_flags[0].elemwise                 = pipe_in_data_i.mode.fpu.op_reduction;
             state_init.op_flags[1].elemwise                 = pipe_in_data_i.mode.fpu.op_reduction;
             state_init.op_flags[2].elemwise                 = pipe_in_data_i.mode.fpu.op_reduction;
             state_init.op_flags[(OP_CNT >= 3) ? 2 : 0].vreg = (pipe_in_data_i.mode.fpu.op == FMADD | pipe_in_data_i.mode.fpu.op == FNMSUB);
             state_init.op_vaddr[(OP_CNT >= 3) ? 2 : 0]      = pipe_in_data_i.rd.addr;
+            state_init.op_flags[OP_CNT-1].vreg              = pipe_in_data_i.mode.fpu.masked;
 
          end
     end

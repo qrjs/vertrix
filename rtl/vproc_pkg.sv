@@ -420,11 +420,31 @@ localparam fpu_features_t RV32ZVFH = '{
     IntFmtMask:    4'b0110
 };
 
+localparam fpu_features_t RV32ZVE32F = '{
+    Width:         32,
+    EnableVectors: 1'b1,
+    EnableNanBox:  1'b1,
+    FpFmtMask:     5'b10000,
+    IntFmtMask:    4'b0010
+};
+
 // FPU implementation for ZVFH: ADDMUL uses MERGED so that the multi-format
 // FMA handles widening operations (FP16 src -> FP32 dst) correctly.
 // With PARALLEL, each format gets a single-format FMA that cannot handle
 // mixed src/dst formats, causing widening operands to be misinterpreted.
 localparam fpnew_pkg::fpu_implementation_t ZVFH_NOREGS = '{
+    PipeRegs:   '{default: 0},
+    UnitTypes:  '{'{default: fpnew_pkg::MERGED},   // ADDMUL
+                  '{default: fpnew_pkg::MERGED},   // DIVSQRT
+                  '{default: fpnew_pkg::PARALLEL}, // NONCOMP
+                  '{default: fpnew_pkg::MERGED}},  // CONV
+    PipeConfig: fpnew_pkg::BEFORE
+};
+
+// For FP32 vector mode, keep the ADDMUL path merged as well. The PARALLEL
+// ADDMUL slice miscomputes FMADD with a non-zero addend in the current setup,
+// while MERGED preserves the expected vd accumulator semantics.
+localparam fpnew_pkg::fpu_implementation_t ZVE32F_NOREGS = '{
     PipeRegs:   '{default: 0},
     UnitTypes:  '{'{default: fpnew_pkg::MERGED},   // ADDMUL
                   '{default: fpnew_pkg::MERGED},   // DIVSQRT

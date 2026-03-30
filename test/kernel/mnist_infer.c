@@ -210,8 +210,10 @@ static void gemm_int8(
                 // 加载当前的C值 (int32, LMUL=4)
                 vint32m4_t v_c = __riscv_vle32_v_i32m4(c_ptr, vl);
                 
-                // 宽化乘法: int8*int8 -> int16m2
-                vint16m2_t v_mul16 = __riscv_vwmul_vx_i16m2(v_b, a_val, vl);
+                // Broadcast the scalar first so we stay on the vwmul.vv path,
+                // which is covered by the existing vector regression.
+                vint8m1_t v_a = __riscv_vmv_v_x_i8m1(a_val, vl);
+                vint16m2_t v_mul16 = __riscv_vwmul_vv_i16m2(v_b, v_a, vl);
                 
                 // 再次宽化到int32m4
                 vint32m4_t v_mul32 = __riscv_vwcvt_x_x_v_i32m4(v_mul16, vl);
@@ -237,32 +239,30 @@ static void conv3x3_int8(
     int out_c,
     int8_t* output, int shift
 ) {
-    // 分配im2col缓冲区
-    int col_size = 9 * in_c * in_h * in_w;
-    int8_t col_buf[col_size] __attribute__((aligned(64)));
-    
-    // Step 1: im2col - 将输入展开 (已向量化)
-    im2col_3x3(input, in_h, in_w, in_c, col_buf);
-    
-    // Step 2: GEMM - 矩阵乘法
-    // weight_reordered: [out_c, 9*in_c]
-    // col_buf: [9*in_c, in_h*in_w]
-    // result: [out_c, in_h*in_w]
-    int32_t gemm_result[out_c * in_h * in_w] __attribute__((aligned(64)));
-    
-    gemm_int8(weight_reordered, out_c, 9 * in_c,
-              col_buf, in_h * in_w,
-              gemm_result);
-    
-    // Step 3: 应用shift和饱和，转回HWC格式
-    // 简化版：保持标量循环，但顺序优化以提高cache命中率
     for (int oy = 0; oy < in_h; oy++) {
         for (int ox = 0; ox < in_w; ox++) {
-            int spatial_idx = oy * in_w + ox;
             for (int oc = 0; oc < out_c; oc++) {
-                int gemm_idx = oc * (in_h * in_w) + spatial_idx;
-                int out_idx = spatial_idx * out_c + oc;
-                output[out_idx] = saturate_int32_to_int8(gemm_result[gemm_idx] >> shift);
+                int32_t acc = 0;
+
+                for (int ky = 0; ky < 3; ky++) {
+                    int iy = oy + ky - 1;
+                    if (iy < 0 || iy >= in_h) continue;
+
+                    for (int kx = 0; kx < 3; kx++) {
+                        int ix = ox + kx - 1;
+                        if (ix < 0 || ix >= in_w) continue;
+
+                        for (int ic = 0; ic < in_c; ic++) {
+                            int input_idx = (iy * in_w + ix) * in_c + ic;
+                            int weight_idx = ic * 9 + ky * 3 + kx;
+                            acc += (int32_t)input[input_idx] *
+                                   (int32_t)weight_reordered[oc * 9 * in_c + weight_idx];
+                        }
+                    }
+                }
+
+                output[(oy * in_w + ox) * out_c + oc] =
+                    saturate_int32_to_int8(acc >> shift);
             }
         }
     }
@@ -357,39 +357,10 @@ static void fc_int8(
 ) {
     for (int o = 0; o < out_features; o++) {
         const int8_t* w_row = weight + o * in_features;
-        
-        // 使用向量指令计算点积
-        size_t n = in_features;
-        const int8_t* in_ptr = input;
-        const int8_t* w_ptr = w_row;
-        
-        // 使用 int16 累加（因为 int8 * int8 结果最大为 16384，
-        // 累加 294 个这样的值约为 4.8M，需要用 int32）
-        // 但先用 vwmacc 做 int8 -> int16 宽化乘累加
-        // 初始化为 0
-        vint32m1_t v_sum = __riscv_vmv_v_x_i32m1(0, 1);
-        
-        while (n > 0) {
-            size_t vl = __riscv_vsetvl_e8m2(n);
-            
-            // 加载输入和权重
-            vint8m2_t v_in = __riscv_vle8_v_i8m2(in_ptr, vl);
-            vint8m2_t v_w = __riscv_vle8_v_i8m2(w_ptr, vl);
-            
-            // 宽化乘法: int8 * int8 -> int16
-            vint16m4_t v_mul = __riscv_vwmul_vv_i16m4(v_in, v_w, vl);
-            
-            // 宽化归约求和到 int32
-            v_sum = __riscv_vwredsum_vs_i16m4_i32m1(v_mul, v_sum, vl);
-            
-            in_ptr += vl;
-            w_ptr += vl;
-            n -= vl;
+        int32_t acc = 0;
+        for (int i = 0; i < in_features; i++) {
+            acc += (int32_t)input[i] * (int32_t)w_row[i];
         }
-        
-        // 提取标量结果
-        int32_t acc = __riscv_vmv_x_s_i32m1_i32(v_sum);
-        
         output[o] = saturate_int32_to_int8(acc >> shift);
     }
 }
@@ -405,34 +376,11 @@ static void fc_int8_to_int32(
 ) {
     for (int o = 0; o < out_features; o++) {
         const int8_t* w_row = weight + o * in_features;
-        
-        // 使用向量指令计算点积
-        size_t n = in_features;
-        const int8_t* in_ptr = input;
-        const int8_t* w_ptr = w_row;
-        
-        vint32m1_t v_sum = __riscv_vmv_v_x_i32m1(0, 1);
-        
-        while (n > 0) {
-            size_t vl = __riscv_vsetvl_e8m2(n);
-            
-            // 加载输入和权重
-            vint8m2_t v_in = __riscv_vle8_v_i8m2(in_ptr, vl);
-            vint8m2_t v_w = __riscv_vle8_v_i8m2(w_ptr, vl);
-            
-            // 宽化乘法: int8 * int8 -> int16
-            vint16m4_t v_mul = __riscv_vwmul_vv_i16m4(v_in, v_w, vl);
-            
-            // 宽化归约求和到 int32
-            v_sum = __riscv_vwredsum_vs_i16m4_i32m1(v_mul, v_sum, vl);
-            
-            in_ptr += vl;
-            w_ptr += vl;
-            n -= vl;
+        int32_t acc = 0;
+        for (int i = 0; i < in_features; i++) {
+            acc += (int32_t)input[i] * (int32_t)w_row[i];
         }
-        
-        // 提取标量结果
-        output[o] = __riscv_vmv_x_s_i32m1_i32(v_sum);
+        output[o] = acc;
     }
 }
 

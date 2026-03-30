@@ -33,6 +33,7 @@ module outer_product_unit #(
     localparam OP_MATMUL = 4'd2;
     localparam OP_MATADD = 4'd3;
     localparam OP_NOP    = 4'hF;
+    localparam [ADDR_WIDTH-1:0] LAST_INDEX = ADDR_WIDTH'(ARRAY_SIZE - 1);
 
     wire [3:0] opcode_in    = instruction[31:28];
     wire       mvin_target  = instruction[21];
@@ -71,9 +72,9 @@ module outer_product_unit #(
                 else if (opcode_in == OP_MVOUT) next_state = MVOUT;
                 else if (opcode_in == OP_MATMUL || opcode_in == OP_MATADD) next_state = COMPUTE;
             end
-            MVIN:    if (addr_counter >= ARRAY_SIZE - 1) next_state = S_DONE;
-            MVOUT:   if (addr_counter >= ARRAY_SIZE - 1) next_state = S_DONE;
-            COMPUTE: if (k_counter >= ARRAY_SIZE - 1 && read_phase >= 2'd3) next_state = S_DONE;
+            MVIN:    if (addr_counter >= LAST_INDEX) next_state = S_DONE;
+            MVOUT:   if (addr_counter >= LAST_INDEX) next_state = S_DONE;
+            COMPUTE: if (k_counter >= LAST_INDEX && read_phase >= 2'd3) next_state = S_DONE;
             S_DONE:  if (opcode_in == OP_NOP) next_state = IDLE;
             default: next_state = IDLE;
         endcase
@@ -97,7 +98,7 @@ module outer_product_unit #(
                     read_phase   <= 0;
                 end
                 MVIN, MVOUT: begin
-                    if (addr_counter < ARRAY_SIZE - 1)
+                    if (addr_counter < LAST_INDEX)
                         addr_counter <= addr_counter + 1;
                 end
                 COMPUTE: begin
@@ -105,7 +106,7 @@ module outer_product_unit #(
                         read_phase <= read_phase + 1;
                     end else begin
                         read_phase <= 0;
-                        if (k_counter < ARRAY_SIZE - 1)
+                        if (k_counter < LAST_INDEX)
                             k_counter <= k_counter + 1;
                     end
                 end

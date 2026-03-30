@@ -7,13 +7,28 @@
 # Specify program name with PROG, object files with OBJ
 
 SW_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
+# Clang requires scalar 'f' in -march when vector FP (zve32f) is enabled.
+# Use RISCV_SOFT_FLOAT=1 for scalar-float C workloads that must avoid OP-FP.
+RISCV_SOFT_FLOAT ?= 0
+RISCV_VECTOR_FP := $(if $(or $(filter 1,$(RISCV_ZVE32F)),$(filter 1,$(RISCV_ZVFH))),1,0)
 
 COMPILER ?= llvm
 ifeq ($(COMPILER),gcc)
-    RISCV_CC            := riscv32-unknown-elf-gcc
-    RISCV_DUMP          := riscv32-unknown-elf-objdump
-    RISCV_OBCP          := riscv32-unknown-elf-objcopy
-    ARCH                := rv32im$(if $(or $(filter 1,$(RISCV_ZVE32F)),$(filter 1,$(RISCV_ZVFH))),f,)v$(if $(or $(filter 1,$(RISCV_ZVE32F)),$(filter 1,$(RISCV_ZVFH))),_zve32f,)
+    RISCV_GCC_PREFIX    ?= $(shell if command -v riscv32-unknown-elf-gcc >/dev/null 2>&1; then \
+                               echo riscv32-unknown-elf;                                      \
+                           elif command -v riscv64-unknown-elf-gcc >/dev/null 2>&1; then      \
+                               echo riscv64-unknown-elf;                                      \
+                           else                                                                \
+                               echo riscv32-unknown-elf;                                      \
+                           fi)
+    RISCV_CC            := $(RISCV_GCC_PREFIX)-gcc
+    RISCV_DUMP          := $(RISCV_GCC_PREFIX)-objdump
+    RISCV_OBCP          := $(RISCV_GCC_PREFIX)-objcopy
+    ifeq ($(filter 1,$(RISCV_SOFT_FLOAT)),1)
+        ARCH            := rv32imv
+    else
+        ARCH            := rv32im$(if $(filter 1,$(RISCV_VECTOR_FP)),f,)v$(if $(filter 1,$(RISCV_VECTOR_FP)),_zve32f,)
+    endif
     LD_SCRIPT           := $(SW_DIR)/link.ld
 else ifeq ($(COMPILER),llvm)
     # Pick the first clang executable in $PATH with version >= 14, or the
@@ -34,7 +49,11 @@ else ifeq ($(COMPILER),llvm)
     RISCV_OBCP          := $(shell find `echo $$PATH | sed 's/:/ /g'`         \
                              -maxdepth 1 -name 'llvm-objcopy*' |              \
                              (cat && echo llvm-objcopy) | head -n 1)
-    ARCH                := rv32im$(if $(or $(filter 1,$(RISCV_ZVE32F)),$(filter 1,$(RISCV_ZVFH))),f_zve32f,zve32x)
+    ifeq ($(filter 1,$(RISCV_SOFT_FLOAT)),1)
+        ARCH            := rv32imzve32x
+    else
+        ARCH            := rv32im$(if $(filter 1,$(RISCV_VECTOR_FP)),f_zve32f,zve32x)
+    endif
     CC_SPECIFIC_OPTIONS := -fuse-ld=lld -Wno-unused-command-line-argument
     LD_SCRIPT           := $(SW_DIR)/lld_link.ld
 endif
@@ -44,7 +63,28 @@ RISCV_FLAGS := -march=$(ARCH) -mabi=ilp32 -static -mcmodel=medany             \
                -fvisibility=hidden -nostdlib -nostartfiles -Wall              \
                $(CC_SPECIFIC_OPTIONS)
 
-CFLAGS := $(CFLAGS) -I$(SW_DIR)/lib/
+ifeq ($(filter 1,$(RISCV_SOFT_FLOAT)),1)
+    SOFT_FLOAT_RT := $(shell                                                 \
+        if [ "$(COMPILER)" = "gcc" ]; then                                   \
+            cc="$(RISCV_CC)";                                                \
+        elif command -v riscv32-unknown-elf-gcc >/dev/null 2>&1; then        \
+            cc="riscv32-unknown-elf-gcc";                                    \
+        elif command -v riscv64-unknown-elf-gcc >/dev/null 2>&1; then        \
+            cc="riscv64-unknown-elf-gcc";                                    \
+        else                                                                 \
+            cc="";                                                           \
+        fi;                                                                  \
+        if [ -n "$$cc" ]; then                                               \
+            lib=`$$cc -march=$(ARCH) -mabi=ilp32 -print-libgcc-file-name     \
+                2>/dev/null`;                                                \
+            if [ -f "$$lib" ]; then                                          \
+                echo "$$lib";                                                \
+            fi;                                                              \
+        fi)
+endif
+
+LDFLAGS := -Wl,--build-id=none $(LDFLAGS)
+COMMON_CFLAGS := -O2 -I$(SW_DIR)/lib/ -include $(SW_DIR)/lib/rvv_compat.h
 
 PROG ?= test
 OBJ  ?= test.o
@@ -58,10 +98,11 @@ dump: $(PROG).elf
 	$(RISCV_DUMP) -D $<
 
 $(PROG).elf: $(RISCV_OBJ) $(LD_SCRIPT)
-	$(RISCV_CC) $(RISCV_FLAGS) -T $(LD_SCRIPT) $(LDFLAGS) $(RISCV_OBJ) -o $@
+	$(RISCV_CC) $(RISCV_FLAGS) -T $(LD_SCRIPT) $(LDFLAGS) $(RISCV_OBJ) \
+	    $(SOFT_FLOAT_RT) -o $@
 
 %.o: %.c
-	$(RISCV_CC) $(RISCV_FLAGS) $(CFLAGS) -c -o $@ $<
+	$(RISCV_CC) $(RISCV_FLAGS) $(COMMON_CFLAGS) $(CFLAGS) -c -o $@ $<
 
 %.o: %.S
 	$(RISCV_CC) $(RISCV_FLAGS) $(ASFLAGS) -c -o $@ $<

@@ -75,7 +75,7 @@ begin
       frbus_wb_fflags[4:0]    = dp_frbus_ex2_fflags[4:0];
     end
     default: begin
-      frbus_wb_data[31:0] = {31{1'b0}};
+      frbus_wb_data[31:0] = 32'b0;
       frbus_wb_fflags[4:0]    = 5'b0;
     end
   endcase
@@ -86,5 +86,4 @@ assign fpu_idu_fwd_fflags[4:0]    = frbus_wb_fflags[4:0];
 assign fpu_idu_fwd_data[31:0] = frbus_wb_data[31:0];
 
 endmodule
-
 

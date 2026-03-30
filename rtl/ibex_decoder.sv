@@ -513,7 +513,7 @@ module ibex_decoder #(
         illegal_insn = 1'b1;
         // Check if major opcode of instruction matches any of the specified coprocessor opcodes
         for (int i = 0; i < 32; i++) begin
-          if (CoprocOpcodes[i] & (instr[6:2] == i)) begin
+          if (CoprocOpcodes[i] & (instr[6:2] == 5'(i))) begin
             cpi_instr_o    = 1'b1;
             rf_ren_a_o     = 1'b1;      // speculatively read rs1 in case it is needed
             rf_ren_b_o     = 1'b1;      // speculatively read rs2 in case it is needed

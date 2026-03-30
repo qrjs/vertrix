@@ -73,6 +73,10 @@ module fpnew_fma #(
   localparam int unsigned EXP_WIDTH = unsigned'(fpnew_pkg::maximum(EXP_BITS + 2, LZC_RESULT_WIDTH));
   // Shift amount width: maximum internal mantissa size is 3p+4 bits
   localparam int unsigned SHIFT_AMOUNT_WIDTH = $clog2(3 * PRECISION_BITS + 5);
+  localparam logic signed [EXP_WIDTH-1:0] EXP_ONE          = EXP_WIDTH'(1);
+  localparam logic signed [EXP_WIDTH-1:0] EXP_TWO          = EXP_WIDTH'(2);
+  localparam logic signed [EXP_WIDTH-1:0] EXP_BIAS         = EXP_WIDTH'(BIAS);
+  localparam logic signed [EXP_WIDTH-1:0] PRODUCT_ZERO_EXP = EXP_TWO - EXP_BIAS;
   // Pipelines
   localparam NUM_INP_REGS = PipeConfig == fpnew_pkg::BEFORE
                             ? NumPipeRegs
@@ -198,7 +202,7 @@ module fpnew_fma #(
       fpnew_pkg::FNMSUB: operand_a.sign = ~operand_a.sign; // invert sign of product
       fpnew_pkg::ADD,
       fpnew_pkg::ADDS: begin // Set multiplicand to +1
-        operand_a = '{sign: 1'b0, exponent: BIAS, mantissa: '0};
+        operand_a = '{sign: 1'b0, exponent: EXP_BITS'(BIAS), mantissa: '0};
         info_a    = '{is_normal: 1'b1, is_boxed: 1'b1, default: 1'b0}; //normal, boxed value.
       end
       fpnew_pkg::MUL: begin // Set addend to +0 or -0, depending whether the rounding mode is RDN
@@ -209,12 +213,12 @@ module fpnew_fma #(
         info_c    = '{is_zero: 1'b1, is_boxed: 1'b1, default: 1'b0}; //zero, boxed value.
       end
       default: begin // propagate don't cares
-        operand_a  = '{default: fpnew_pkg::DONT_CARE};
-        operand_b  = '{default: fpnew_pkg::DONT_CARE};
-        operand_c  = '{default: fpnew_pkg::DONT_CARE};
-        info_a     = '{default: fpnew_pkg::DONT_CARE};
-        info_b     = '{default: fpnew_pkg::DONT_CARE};
-        info_c     = '{default: fpnew_pkg::DONT_CARE};
+        operand_a  = '1;
+        operand_b  = '1;
+        operand_c  = '1;
+        info_a     = '1;
+        info_b     = '1;
+        info_c     = '1;
       end
     endcase
   end
@@ -285,21 +289,25 @@ module fpnew_fma #(
   logic signed [EXP_WIDTH-1:0] exponent_a, exponent_b, exponent_c;
   logic signed [EXP_WIDTH-1:0] exponent_addend, exponent_product, exponent_difference;
   logic signed [EXP_WIDTH-1:0] tentative_exponent;
+  logic signed [EXP_WIDTH-1:0] exponent_a_subnormal, exponent_b_subnormal, exponent_c_not_normal;
 
   // Zero-extend exponents into signed container - implicit width extension
-  assign exponent_a = signed'({1'b0, operand_a.exponent});
-  assign exponent_b = signed'({1'b0, operand_b.exponent});
-  assign exponent_c = signed'({1'b0, operand_c.exponent});
+  assign exponent_a = EXP_WIDTH'({1'b0, operand_a.exponent});
+  assign exponent_b = EXP_WIDTH'({1'b0, operand_b.exponent});
+  assign exponent_c = EXP_WIDTH'({1'b0, operand_c.exponent});
+  assign exponent_a_subnormal = EXP_WIDTH'(info_a.is_subnormal);
+  assign exponent_b_subnormal = EXP_WIDTH'(info_b.is_subnormal);
+  assign exponent_c_not_normal = EXP_WIDTH'(~info_c.is_normal);
 
   // Calculate internal exponents from encoded values. Real exponents are (ex = Ex - bias + 1 - nx)
   // with Ex the encoded exponent and nx the implicit bit. Internal exponents stay biased.
-  assign exponent_addend = signed'(exponent_c + $signed({1'b0, ~info_c.is_normal})); // 0 as subnorm
+  assign exponent_addend = exponent_c + exponent_c_not_normal; // 0 as subnorm
   // Biased product exponent is the sum of encoded exponents minus the bias.
   assign exponent_product = (info_a.is_zero || info_b.is_zero)
-                            ? 2 - signed'(BIAS) // in case the product is zero, set minimum exp.
-                            : signed'(exponent_a + info_a.is_subnormal
-                                      + exponent_b + info_b.is_subnormal
-                                      - signed'(BIAS));
+                            ? PRODUCT_ZERO_EXP // in case the product is zero, set minimum exp.
+                            : (exponent_a + exponent_a_subnormal)
+                            + (exponent_b + exponent_b_subnormal)
+                            - EXP_BIAS;
   // Exponent difference is the addend exponent minus the product exponent
   assign exponent_difference = exponent_addend - exponent_product;
   // The tentative exponent will be the larger of the product or addend exponent
@@ -310,11 +318,11 @@ module fpnew_fma #(
 
   always_comb begin : addend_shift_amount
     // Product-anchored case, saturated shift (addend is only in the sticky bit)
-    if (exponent_difference <= signed'(-2 * PRECISION_BITS - 1))
-      addend_shamt = 3 * PRECISION_BITS + 4;
+    if (exponent_difference <= EXP_WIDTH'(-2 * PRECISION_BITS - 1))
+      addend_shamt = SHIFT_AMOUNT_WIDTH'(3 * PRECISION_BITS + 4);
     // Addend and product will have mutual bits to add
-    else if (exponent_difference <= signed'(PRECISION_BITS + 2))
-      addend_shamt = unsigned'(signed'(PRECISION_BITS) + 3 - exponent_difference);
+    else if (exponent_difference <= EXP_WIDTH'(PRECISION_BITS + 2))
+      addend_shamt = SHIFT_AMOUNT_WIDTH'(signed'(PRECISION_BITS) + 3 - exponent_difference);
     // Addend-anchored case, saturated shift (product is only in the sticky bit)
     else
       addend_shamt = 0;
@@ -338,7 +346,7 @@ module fpnew_fma #(
   // Product is placed into a 3p+4 bit wide vector, padded with 2 bits for round and sticky:
   // | 000...000 | product | RS |
   //  <-  p+2  -> <-  2p -> < 2>
-  assign product_shifted = product << 2; // constant shift
+  assign product_shifted = {{(PRECISION_BITS+2){1'b0}}, product, 2'b0}; // constant shift
 
   // -----------------
   // Addend data path
@@ -358,7 +366,7 @@ module fpnew_fma #(
   // | 000..........000 | mantissa_c | 000...............0GR |  sticky bits  |
   //  <- addend_shamt -> <-    p   -> <- 2p+4-addend_shamt -> <-  up to p  ->
   assign {addend_after_shift, addend_sticky_bits} =
-      (mantissa_c << (3 * PRECISION_BITS + 4)) >> addend_shamt;
+      ({mantissa_c, {(3 * PRECISION_BITS + 4){1'b0}}}) >> addend_shamt;
 
   assign sticky_before_add     = (| addend_sticky_bits);
   // assign addend_after_shift[0] = sticky_before_add;
@@ -376,7 +384,7 @@ module fpnew_fma #(
   logic                        final_sign;
 
   //Mantissa adder (ab+c). In normal addition, it cannot overflow.
-  assign sum_pos = product_shifted + addend_shifted + inject_carry_in;
+  assign sum_pos = {1'b0, product_shifted} + {1'b0, addend_shifted} + {{3*PRECISION_BITS+4{1'b0}}, inject_carry_in};
   assign sum_carry = sum_pos[3*PRECISION_BITS+4];
 
   // Parallel adder for negative sum (only used for effective subtractions).
@@ -385,7 +393,7 @@ module fpnew_fma #(
   assign sum_neg = addend_after_shift - product_shifted;
 
   // Complement negative sum (can only happen in subtraction -> overflows for positive results)
-  assign sum        = (effective_subtraction && ~sum_carry) ? sum_neg : sum_pos;
+  assign sum        = (effective_subtraction && ~sum_carry) ? sum_neg[3*PRECISION_BITS+3:0] : sum_pos[3*PRECISION_BITS+3:0];
 
   // In case of a mispredicted subtraction result, do a sign flip
   assign final_sign = (effective_subtraction && (sum_carry == tentative_sign))
@@ -501,6 +509,8 @@ module fpnew_fma #(
 
   logic        [SHIFT_AMOUNT_WIDTH-1:0] norm_shamt; // Normalization shift amount
   logic signed [EXP_WIDTH-1:0]          normalized_exponent;
+  logic signed [EXP_WIDTH-1:0]          leading_zero_count_exp;
+  logic signed [EXP_WIDTH-1:0]          exponent_product_after_lzc;
 
   logic [3*PRECISION_BITS+4:0] sum_shifted;       // result after first normalization shift
   logic [PRECISION_BITS:0]     final_mantissa;    // final mantissa before rounding with round bit
@@ -522,20 +532,22 @@ module fpnew_fma #(
   );
 
   assign leading_zero_count_sgn = signed'({1'b0, leading_zero_count});
+  assign leading_zero_count_exp = EXP_WIDTH'(leading_zero_count_sgn);
+  assign exponent_product_after_lzc = exponent_product_q - leading_zero_count_exp + EXP_ONE;
 
   // Normalization shift amount based on exponents and LZC (unsigned as only left shifts)
   always_comb begin : norm_shift_amount
     // Product-anchored case or cancellations require LZC
     if ((exponent_difference_q <= 0) || (effective_subtraction_q && (exponent_difference_q <= 2))) begin
       // Normal result (biased exponent > 0 and not a zero)
-      if ((exponent_product_q - leading_zero_count_sgn + 1 >= 0) && !lzc_zeroes) begin
+      if ((exponent_product_after_lzc >= 0) && !lzc_zeroes) begin
         // Undo initial product shift, remove the counted zeroes
-        norm_shamt          = PRECISION_BITS + 2 + leading_zero_count;
-        normalized_exponent = exponent_product_q - leading_zero_count_sgn + 1; // account for shift
+        norm_shamt          = SHIFT_AMOUNT_WIDTH'(PRECISION_BITS + 2 + leading_zero_count);
+        normalized_exponent = exponent_product_after_lzc; // account for shift
       // Subnormal result
       end else begin
         // Cap the shift distance to align mantissa with minimum exponent
-        norm_shamt          = unsigned'(signed'(PRECISION_BITS) + 2 + exponent_product_q);
+        norm_shamt          = SHIFT_AMOUNT_WIDTH'(signed'(PRECISION_BITS) + 2 + exponent_product_q);
         normalized_exponent = 0; // subnormals encoded as 0
       end
     // Addend-anchored case
@@ -546,25 +558,25 @@ module fpnew_fma #(
   end
 
   // Do the large normalization shift
-  assign sum_shifted       = sum_q << norm_shamt;
+  assign sum_shifted       = {1'b0, sum_q} << norm_shamt;
 
   // The addend-anchored case needs a 1-bit normalization since the leading-one can be to the left
   // or right of the (non-carry) MSB of the sum.
   always_comb begin : small_norm
     // Default assignment, discarding carry bit
-    {final_mantissa, sum_sticky_bits} = sum_shifted;
+    {final_mantissa, sum_sticky_bits} = sum_shifted[3*PRECISION_BITS+3:0];
     final_exponent                    = normalized_exponent;
 
     // The normalized sum has overflown, align right and fix exponent
     if (sum_shifted[3*PRECISION_BITS+4]) begin // check the carry bit
-      {final_mantissa, sum_sticky_bits} = sum_shifted >> 1;
+      {final_mantissa, sum_sticky_bits} = sum_shifted[3*PRECISION_BITS+4:1];
       final_exponent                    = normalized_exponent + 1;
     // The normalized sum is normal, nothing to do
     end else if (sum_shifted[3*PRECISION_BITS+3]) begin // check the sum MSB
       // do nothing
     // The normalized sum is still denormal, align left - unless the result is not already subnormal
     end else if (normalized_exponent > 1) begin
-      {final_mantissa, sum_sticky_bits} = sum_shifted << 1;
+      {final_mantissa, sum_sticky_bits} = {sum_shifted[3*PRECISION_BITS+2:0], 1'b0};
       final_exponent                    = normalized_exponent - 1;
     // Otherwise we're denormal
     end else begin

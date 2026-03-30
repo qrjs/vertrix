@@ -45,6 +45,9 @@ module vproc_decoder #(
 
     import vproc_pkg::*;
     import fpnew_pkg::*;
+`ifdef RISCV_ZVE32F
+    localparam bit SCALAR_FREG_IO_SUPPORTED = 1'b0;
+`endif
 
     logic [4:0] instr_vs1;
     logic [4:0] instr_vs2;
@@ -246,25 +249,25 @@ module vproc_decoder #(
                                     3'b000: begin
                                                 emul = EMUL_1;
                                                 `ifndef OLD_VICUNA
-                                                vl = (VREG_W/8)-1;
+                                                vl = CFG_VL_W'((VREG_W/8)-1);
                                                 `endif
                                             end
                                     3'b001: begin
                                                 emul = EMUL_2;
                                                 `ifndef OLD_VICUNA
-                                                vl = (2*VREG_W/8)-1;
+                                                vl = CFG_VL_W'((2*VREG_W/8)-1);
                                                 `endif
                                             end
                                     3'b011: begin
                                                 emul = EMUL_4;
                                                 `ifndef OLD_VICUNA
-                                                vl = (4*VREG_W/8)-1;
+                                                vl = CFG_VL_W'((4*VREG_W/8)-1);
                                                 `endif
                                             end
                                     3'b111: begin
                                                 emul = EMUL_8;
                                                 `ifndef OLD_VICUNA
-                                                vl = (8*VREG_W/8)-1;
+                                                vl = CFG_VL_W'((8*VREG_W/8)-1);
                                                 `endif
                                             end
                                     default: instr_illegal = 1'b1;
@@ -302,6 +305,16 @@ module vproc_decoder #(
                 // destination register is a vreg for most instructions:
                 rd_o.vreg = 1'b1;
                 rd_o.addr = instr_vd;
+
+`ifdef RISCV_ZVE32F
+                // The current Ibex integration only forwards X registers and
+                // FRM state into the vector unit.  Vector instructions that
+                // require scalar F-register operands are trapped until a real
+                // FPR interface is wired up at the top level.
+                if ((instr_i[14:12] == 3'b101) && ~SCALAR_FREG_IO_SUPPORTED) begin
+                    instr_illegal = 1'b1;
+                end
+`endif
 
                 // select source operands:
                 unique case (instr_i[14:12])
@@ -1165,25 +1178,25 @@ module vproc_decoder #(
                                 5'b00000: begin
                                             emul = EMUL_1;
                                             `ifndef OLD_VICUNA
-                                            vl = (VREG_W/8)-1;
+                                            vl = CFG_VL_W'((VREG_W/8)-1);
                                             `endif
                                           end
                                 5'b00001: begin
                                             emul = EMUL_2;
                                             `ifndef OLD_VICUNA
-                                            vl = (2*VREG_W/8)-1;
+                                            vl = CFG_VL_W'((2*VREG_W/8)-1);
                                             `endif
                                           end
                                 5'b00011: begin
                                             emul = EMUL_4;
                                             `ifndef OLD_VICUNA
-                                            vl = (4*VREG_W/8)-1;
+                                            vl = CFG_VL_W'((4*VREG_W/8)-1);
                                             `endif
                                           end
                                 5'b00111: begin
                                             emul = EMUL_8;
                                             `ifndef OLD_VICUNA
-                                            vl = (8*VREG_W/8)-1;
+                                            vl = CFG_VL_W'((8*VREG_W/8)-1);
                                             `endif
                                           end
                                 default: instr_illegal = 1'b1;
@@ -1407,11 +1420,10 @@ module vproc_decoder #(
                         end
 
                         `ifdef RISCV_ZVE32F  
-                        //Only include Zve32f instructions when FPU is enabled
-                        //TODO: select rounding mode by adding extra read port to the F-CSR.  May need to confirm these flags are set correctly
-                        //TODO: F reduction operations will need extra logic in the V-FPU
-                        //TODO: F move from VREG to FREG will need extra write port for FPU_SS
-                        // Floating Point unit:
+                        // Only include Zve32f instructions when the vector FPU
+                        // is enabled.  FRM already comes from Ibex CSR state;
+                        // scalar F-register operands/results remain trapped by
+                        // the integration guard above.
                         {6'b000000, 3'b001},        // vfadd VV
                         {6'b000000, 3'b101}: begin  // vfadd VF
                             unit_o                = UNIT_FPU;
@@ -1429,7 +1441,7 @@ module vproc_decoder #(
                         {6'b000001, 3'b001}: begin  // vfredusum VV
                             unit_o                = UNIT_FPU;
                             mode_o.fpu.op         = ADD;
-                            mode_o.fpu.op_mod     = 1'b0; //Currently treating all reductions as ordered reductions.  TODO: improve performance by implementing unordered reductions more efficiently
+                            mode_o.fpu.op_mod     = 1'b0;
                             mode_o.fpu.op_rev     = 1'b0;
                             mode_o.fpu.op_reduction = 1'b1;
                             mode_o.fpu.rnd_mode   = float_round_mode_i;
@@ -1455,7 +1467,7 @@ module vproc_decoder #(
                         {6'b000011, 3'b001}: begin  // vfredosum VV
                             unit_o                = UNIT_FPU;
                             mode_o.fpu.op         = ADD;
-                            mode_o.fpu.op_mod     = 1'b0; //Currently treating all reductions as ordered reductions.  TODO: improve performance by implementing unordered reductions more efficiently
+                            mode_o.fpu.op_mod     = 1'b0;
                             mode_o.fpu.op_rev     = 1'b0;
                             mode_o.fpu.op_reduction = 1'b1;
                             mode_o.fpu.rnd_mode   = float_round_mode_i;
@@ -1482,7 +1494,7 @@ module vproc_decoder #(
                         {6'b000101, 3'b001}: begin  // vfredmin VV
                             unit_o                = UNIT_FPU;
                             mode_o.fpu.op         = MINMAX;
-                            mode_o.fpu.op_mod     = 1'b0; //Currently treating all reductions as ordered reductions.  TODO: improve performance by implementing unordered reductions more efficiently
+                            mode_o.fpu.op_mod     = 1'b0;
                             mode_o.fpu.op_rev     = 1'b0;
                             mode_o.fpu.op_reduction = 1'b1;
                             mode_o.fpu.rnd_mode   = RNE;//MIN/MAX opmode encoded in rounding mode
@@ -1508,7 +1520,7 @@ module vproc_decoder #(
                         {6'b000111, 3'b001}: begin  // vfredmax VV
                             unit_o                = UNIT_FPU;
                             mode_o.fpu.op         = MINMAX;
-                            mode_o.fpu.op_mod     = 1'b0; //Currently treating all reductions as ordered reductions.  TODO: improve performance by implementing unordered reductions more efficiently
+                            mode_o.fpu.op_mod     = 1'b0;
                             mode_o.fpu.op_rev     = 1'b0;
                             mode_o.fpu.op_reduction = 1'b1;
                             mode_o.fpu.rnd_mode   = RTZ;//MIN/MAX opmode encoded in rounding mode
@@ -1741,7 +1753,7 @@ module vproc_decoder #(
                                     widenarrow_o          = OP_SINGLEWIDTH;
                                     mode_o.fpu.src_2_narrow = 1'b0;
                                     instr_illegal       = 1'b0;
-                                    mode_o.fpu.rnd_mode   = RNE;//TODO: Think this is hard coded
+                                    mode_o.fpu.rnd_mode   = float_round_mode_i;
                                 end
                                 5'b00001: begin             //fcvt.x.f
                                     mode_o.fpu.op         = F2I;
@@ -1749,7 +1761,7 @@ module vproc_decoder #(
                                     widenarrow_o          = OP_SINGLEWIDTH;
                                     mode_o.fpu.src_2_narrow = 1'b0;
                                     instr_illegal       = 1'b0;
-                                    mode_o.fpu.rnd_mode   = RNE;//TODO: Think this is hard coded
+                                    mode_o.fpu.rnd_mode   = float_round_mode_i;
                                 end
                                 5'b00010: begin            //fcvt.f.xu
                                     mode_o.fpu.op         = I2F;
@@ -1757,7 +1769,7 @@ module vproc_decoder #(
                                     widenarrow_o          = OP_SINGLEWIDTH;
                                     mode_o.fpu.src_2_narrow = 1'b0;
                                     instr_illegal       = 1'b0;
-                                    mode_o.fpu.rnd_mode   = RNE;//TODO: Think this is hard coded
+                                    mode_o.fpu.rnd_mode   = float_round_mode_i;
                                 end
                                 5'b00011: begin           //fcvt.f.x
                                     mode_o.fpu.op         = I2F;
@@ -1765,7 +1777,7 @@ module vproc_decoder #(
                                     widenarrow_o          = OP_SINGLEWIDTH;
                                     mode_o.fpu.src_2_narrow = 1'b0;
                                     instr_illegal       = 1'b0;
-                                    mode_o.fpu.rnd_mode   = RNE;//TODO: Think this is hard coded
+                                    mode_o.fpu.rnd_mode   = float_round_mode_i;
                                 end
                                  5'b00110: begin          //fcvt.rtz.xu.f
                                     mode_o.fpu.op         = F2I;
@@ -1773,7 +1785,7 @@ module vproc_decoder #(
                                     widenarrow_o          = OP_SINGLEWIDTH;
                                     mode_o.fpu.src_2_narrow = 1'b0;
                                     instr_illegal       = 1'b0;
-                                    mode_o.fpu.rnd_mode   = RTZ;//TODO: Think this is hard coded
+                                    mode_o.fpu.rnd_mode   = RTZ;
                                 end
                                 5'b00111: begin            //fcvt.rtz.x.f
                                     mode_o.fpu.op         = F2I;
@@ -1781,7 +1793,7 @@ module vproc_decoder #(
                                     widenarrow_o          = OP_SINGLEWIDTH;
                                     mode_o.fpu.src_2_narrow = 1'b0;
                                     instr_illegal       = 1'b0;
-                                    mode_o.fpu.rnd_mode   = RTZ;//TODO: Think this is hard coded
+                                    mode_o.fpu.rnd_mode   = RTZ;
                                 end
 
                                 default : begin
@@ -1862,25 +1874,28 @@ module vproc_decoder #(
                         end
 
                         {6'b010000, 3'b001}: begin  // VWFUNARY0
-                            unit_o = UNIT_ELEM;
-                            unique case (instr_i[19:15])
-                                5'b00000: begin
-                                            mode_o.elem.op = ELEM_XMV;    // vfmv.f.s
-                                            `ifndef OLD_VICUNA
-                                            evl_pol             = EVL_1;
-                                            `endif
-                                        end
-                                default:  instr_illegal  = 1'b1;
-                            endcase
-                            mode_o.elem.xreg   = 1'b1;
-                            mode_o.elem.freg   = 1'b1;
-                            mode_o.elem.masked = instr_masked;
-                            rs1_o.vreg         = 1'b0;
-                            rd_o.vreg          = 1'b0;
+                            if (SCALAR_FREG_IO_SUPPORTED) begin
+                                unit_o = UNIT_ELEM;
+                                unique case (instr_i[19:15])
+                                    5'b00000: begin
+                                                mode_o.elem.op = ELEM_XMV;    // vfmv.f.s
+                                                `ifndef OLD_VICUNA
+                                                evl_pol             = EVL_1;
+                                                `endif
+                                            end
+                                    default:  instr_illegal  = 1'b1;
+                                endcase
+                                mode_o.elem.xreg   = 1'b1;
+                                mode_o.elem.freg   = 1'b1;
+                                mode_o.elem.masked = instr_masked;
+                                rs1_o.vreg         = 1'b0;
+                                rd_o.vreg          = 1'b0;
 
-                            fpr_wr_req_valid = 1'b1;
-                            fpr_wr_req_addr_o = instr_vd;
-                            
+                                fpr_wr_req_valid   = 1'b1;
+                                fpr_wr_req_addr_o  = instr_vd;
+                            end else begin
+                                instr_illegal = 1'b1;
+                            end
                         end
                         
                         {6'b010000, 3'b101}: begin  // VRFUNARY0
@@ -1911,10 +1926,10 @@ module vproc_decoder #(
 
                         `ifdef RISCV_ZVFH 
                         //These instructions only become defined once SEW16 is defined for FP
-                        {6'b110000, 3'b001},        // vfwadd VV TODO: (might need to upgrade fp_new for this)
+                        {6'b110000, 3'b001},        // vfwadd VV
                         {6'b110000, 3'b101}: begin  // vfwadd VF
                             unit_o                = UNIT_FPU;
-                            mode_o.fpu.op         = ADD;
+                            mode_o.fpu.op         = ADDS;
                             mode_o.fpu.op_mod     = 1'b0;
                             mode_o.fpu.op_rev     = 1'b0;
                             mode_o.fpu.rnd_mode   = float_round_mode_i;
@@ -1937,10 +1952,10 @@ module vproc_decoder #(
                             widenarrow_o          = OP_WIDENING;
                         end
 
-                        {6'b110010, 3'b001},        // vfwsub VV TODO: TEST (might need to upgrade fp_new for this)
+                        {6'b110010, 3'b001},        // vfwsub VV
                         {6'b110010, 3'b101}: begin  // vfwsub VF
                             unit_o                = UNIT_FPU;
-                            mode_o.fpu.op         = ADD;
+                            mode_o.fpu.op         = ADDS;
                             mode_o.fpu.op_mod     = 1'b1;
                             mode_o.fpu.op_rev     = 1'b0;
                             mode_o.fpu.rnd_mode   = float_round_mode_i;
@@ -1963,20 +1978,20 @@ module vproc_decoder #(
                             widenarrow_o          = OP_WIDENING;
                         end
 
-                        {6'b110100, 3'b001},        // vfwadd.w VV TODO: MODIFICATIONS TO FP_NEW REQUIRED
+                        {6'b110100, 3'b001},        // vfwadd.w VV
                         {6'b110100, 3'b101}: begin  // vfwadd.w VF
                             unit_o                = UNIT_FPU;
                             mode_o.fpu.op         = ADD;
-                            mode_o.fpu.op_mod     = 1'b1;
+                            mode_o.fpu.op_mod     = 1'b0;
                             mode_o.fpu.op_rev     = 1'b0;
                             mode_o.fpu.rnd_mode   = float_round_mode_i;
                             mode_o.fpu.masked     = instr_masked;
                             mode_o.fpu.src_1_narrow = 1'b1;
-                            mode_o.fpu.src_2_narrow = 1'b1;
+                            mode_o.fpu.src_2_narrow = 1'b0;
                             widenarrow_o          = OP_WIDENING;
                         end
 
-                        {6'b110110, 3'b001},        // vfwsub.w VV TODO: MODIFICATIONS TO FP_NEW REQUIRED
+                        {6'b110110, 3'b001},        // vfwsub.w VV
                         {6'b110110, 3'b101}: begin  // vfwsub.w VF
                             unit_o                = UNIT_FPU;
                             mode_o.fpu.op         = ADD;
@@ -1985,7 +2000,7 @@ module vproc_decoder #(
                             mode_o.fpu.rnd_mode   = float_round_mode_i;
                             mode_o.fpu.masked     = instr_masked;
                             mode_o.fpu.src_1_narrow = 1'b1;
-                            mode_o.fpu.src_2_narrow = 1'b1;
+                            mode_o.fpu.src_2_narrow = 1'b0;
                             widenarrow_o          = OP_WIDENING;
                         end
 
@@ -2378,37 +2393,43 @@ module vproc_decoder #(
                 
 
             end else if (widenarrow_o == OP_WIDENING_EXT2) begin
-                // unlike other widening ops, for [s/z]ext.vf2, eew, emul, and vl are already set correctly     
-                vsew_o = vsew_i;
+                // [s/z]ext.vf2 widens elements by 2x, so the execution width,
+                // EMUL and effective vector length must match the widened view.
+                unique case (vsew_i)
+                    VSEW_8:  vsew_o = VSEW_16;
+                    VSEW_16: vsew_o = VSEW_32;
+                    default: vsew_o = VSEW_INVALID;
+                endcase
                 unique case (lmul_i)
                     LMUL_F8,
                     LMUL_F4,
-                    LMUL_F2,
-                    LMUL_1: emul_o = EMUL_1;
-                    LMUL_2: emul_o = EMUL_2;
-                    LMUL_4: emul_o = EMUL_4;
-                    LMUL_8: emul_o = EMUL_8;
+                    LMUL_F2: emul_o = EMUL_1;
+                    LMUL_1:  emul_o = EMUL_2;
+                    LMUL_2:  emul_o = EMUL_4;
+                    LMUL_4:  emul_o = EMUL_8;
+                    LMUL_8:  emul_invalid = 1'b1;
                     default: ;
                 endcase
-                vl_o = vl_i;
-                
-                
+                vl_o = {vl_i[CFG_VL_W-2:0], 1'b1};
+
              end else if (widenarrow_o == OP_WIDENING_EXT4) begin
-                // unlike other widening ops, for [s/z]ext.vf4, eew, emul, and vl are already set correctly     
-                vsew_o = vsew_i;
+                // [s/z]ext.vf4 widens elements by 4x and is only valid for SEW=8.
+                unique case (vsew_i)
+                    VSEW_8:  vsew_o = VSEW_32;
+                    default: vsew_o = VSEW_INVALID;
+                endcase
                 unique case (lmul_i)
                     LMUL_F8,
-                    LMUL_F4,
-                    LMUL_F2,
-                    LMUL_1: emul_o = EMUL_1;
-                    LMUL_2: emul_o = EMUL_2;
-                    LMUL_4: emul_o = EMUL_4;
-                    LMUL_8: emul_o = EMUL_8;
+                    LMUL_F4: emul_o = EMUL_1;
+                    LMUL_F2: emul_o = EMUL_2;
+                    LMUL_1:  emul_o = EMUL_4;
+                    LMUL_2:  emul_o = EMUL_8;
+                    LMUL_4,
+                    LMUL_8:  emul_invalid = 1'b1;
                     default: ;
                 endcase
-                vl_o = vl_i;
-  
-                
+                vl_o = {vl_i[CFG_VL_W-3:0], 2'b11};
+
             end else begin
                 // for widening or narrowing ops, eew and emul are increased to the next higher value,
                 // since those are the eew and emul that are used for the op itself; vl is doubled to

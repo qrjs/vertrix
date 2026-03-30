@@ -145,7 +145,7 @@ end
 - `sw/qat_train_mnist.py` - 训练脚本，包含 MNISTQATNet 模型定义
 - `test/fp/vfadd_test.S` - FP 汇编测试模板，展示测试编写规范
 - `test/fp/test_configs.conf` - FP 测试配置，使用 `RISCV_ZVE32F=1`
-- `test/kernel/test_configs.conf` - kernel 测试配置，当前不含 FP 使能
+- `test/kernel/test_configs.conf` - kernel 测试配置，当前已包含 `RISCV_ZVE32F=1`
 
 ## Dependencies and Sequence
 
@@ -196,7 +196,7 @@ end
 - C 代码应使用 RVV 内联函数（`__riscv_v*` 命名风格），与 `mnist_infer.c` 保持一致
 
 ### Key Technical Notes
-- 当前 FP 测试配置 (`test/fp/test_configs.conf`) 使用 `VREG_W=128 VMEM_W=32`，而 kernel 测试使用 `VREG_W=512 VMEM_W=256`。FP32 MNIST 需要在 kernel 配置中同时启用大缓存和 FP 支持
+- 当前 FP 测试配置 (`test/fp/test_configs.conf`) 与 kernel 测试配置都使用 `VREG_W=128 VMEM_W=32`，并且 kernel 配置已启用 `RISCV_ZVE32F=1`
 - fpnew 库已支持 SQRT、F2I、I2F 操作，但需要确认 vproc_fpu.sv 中的数据通路是否正确处理这些操作类型（特别是 CONV 操作组可能需要额外的格式/类型控制信号）
 - 宽化操作位于 `ifdef RISCV_ZVFH` 保护下，仅在启用 FP16 半精度时可用。纯 FP32 MNIST 推理不依赖宽化操作
 - FP32 测试样本输入：当前 `mnist_test_sample.h` 中的测试数据为 INT8 格式，FP32 推理可以选择在 C 代码中运行时转换（使用标量浮点转换），或在 Python 脚本中导出 FP32 格式的测试样本

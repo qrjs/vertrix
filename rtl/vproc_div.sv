@@ -246,7 +246,6 @@ module vproc_div #(
      generate
         for (genvar g = 0; g < DIV_OP_W / 32; g++) begin
 
-            logic           div_en;               
             logic           div_clz_en;
             logic [31:0]    div_clz_data_rev;
             logic [5:0]     div_clz_result;

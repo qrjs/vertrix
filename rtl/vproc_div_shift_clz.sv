@@ -122,7 +122,7 @@ module vproc_div_shift_clz (
   );
 
   // Divider assumes CLZ returning 32 when there are no zeros (as per CLZ spec)
-  assign div_clz_result_o = ff_no_one ? 6'd32 : ff1_result;
+  assign div_clz_result_o = ff_no_one ? 6'd32 : 6'(ff1_result);
 
 
 

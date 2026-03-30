@@ -97,7 +97,7 @@ package fpnew_pkg;
         // pragma translate_on
         // just return any integer to avoid any latches
         // hopefully this error is caught by simulation
-        return INT8;
+        return 8;
       end
     endcase
   endfunction

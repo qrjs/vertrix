@@ -41,6 +41,7 @@ module vproc_vregpack #(
         input  logic                                pipe_in_pend_clr_i,     // clear pend writes
         input  logic   [$clog2(VADDR_W-1)     -1:0] pipe_in_pend_clr_cnt_i, // vregs to clear count
         input  logic                                pipe_in_instr_done_i,   // instr done flag
+        input  logic                                pipe_in_no_stall_i,     // result already hazard-checked upstream
 
         // vector register file write port
         output logic                                vreg_wr_valid_o,
@@ -80,6 +81,7 @@ module vproc_vregpack #(
         logic                                pend_clr;
         logic   [PEND_CLEAR_CNT_W      -1:0] pend_clr_cnt;
         logic                                instr_done;
+        logic                                no_stall;
     } vregpack_state_t;
 
     logic            stage_valid_q, stage_valid_d;
@@ -118,6 +120,7 @@ module vproc_vregpack #(
             stage_state_d.pend_clr     = pipe_in_pend_clr_i;
             stage_state_d.pend_clr_cnt = pipe_in_pend_clr_cnt_i;
             stage_state_d.instr_done   = pipe_in_instr_done_i;
+            stage_state_d.no_stall     = pipe_in_no_stall_i;
             for (int i = 0; i < RES_CNT; i++) begin
                 if (pipe_in_res_valid_i[i]) begin
                     stage_state_d.res_buffer[i] = res_buffer_next[i];
@@ -153,7 +156,7 @@ module vproc_vregpack #(
         endcase
     end
 
-    assign stage_stall = (stage_state_q.res_store != '0) & (
+    assign stage_stall = (stage_state_q.res_store != '0) & ~stage_state_q.no_stall & (
         pending_vreg_reads_i[stage_state_q.vaddr] | instr_speculative
     );
     assign stage_ready = ~stage_valid_q | (
@@ -317,13 +320,13 @@ module vproc_vregpack #(
                         msk_default = DONT_CARE_ZERO ? '0 : 'x;
                         unique case (pipe_in_eew_i)
                             VSEW_8: begin
-                                msk_default =    1'b1;
+                                msk_default =    $bits(msk_default)'(1'b1);
                             end
                             VSEW_16: begin
-                                msk_default =    2'b11;
+                                msk_default =    $bits(msk_default)'(2'b11);
                             end
                             VSEW_32: begin
-                                msk_default =    4'b1111;
+                                msk_default =    $bits(msk_default)'(4'b1111);
                             end
                             default: ;
                         endcase
@@ -392,12 +395,12 @@ module vproc_vregpack #(
                             //clear buffer if this is the first result being written //TODO: This might cause issues when tail elements cannot be overwritten if the mask is not considered
                             unique case (pipe_in_res_flags_i[i].vreg_idx)
                                 0: begin
-                                    res_buffer_next[i] = res_default;
-                                    msk_buffer_next[i] = msk_default;
+                                    res_buffer_next[i] = $bits(res_buffer_next[i])'(res_default);
+                                    msk_buffer_next[i] = $bits(msk_buffer_next[i])'(msk_default);
                                 end
                                 default: begin
-                                    res_buffer_next[i] = res_buffer[i] | (res_default << ((pipe_in_res_flags_i[i].vreg_idx) * RES_W[i]));
-                                    msk_buffer_next[i] = msk_buffer[i] | (msk_default << ((pipe_in_res_flags_i[i].vreg_idx) * RES_W[i]/8));
+                                    res_buffer_next[i] = res_buffer[i] | ($bits(res_buffer_next[i])'(res_default) << ((pipe_in_res_flags_i[i].vreg_idx) * RES_W[i]));
+                                    msk_buffer_next[i] = msk_buffer[i] | ($bits(msk_buffer_next[i])'(msk_default) << ((pipe_in_res_flags_i[i].vreg_idx) * RES_W[i]/8));
                                 end
                             endcase
                         end

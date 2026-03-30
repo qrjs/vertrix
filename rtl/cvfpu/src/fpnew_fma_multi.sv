@@ -106,6 +106,22 @@ module fpnew_fma_multi #(
     logic [SUPER_MAN_BITS-1:0] mantissa;
   } fp_t;
 
+  typedef logic signed [SUPER_EXP_BITS-1:0] super_exp_t;
+  typedef logic        [SUPER_MAN_BITS-1:0] super_man_t;
+  typedef logic signed [EXP_WIDTH-1:0]      exp_t;
+  typedef logic        [SHIFT_AMOUNT_WIDTH-1:0] shamt_t;
+  typedef logic        [3*PRECISION_BITS+3:0]   sum_t;
+  typedef logic        [3*PRECISION_BITS+4:0]   sum_ext_t;
+  typedef logic        [4*PRECISION_BITS+3:0]   addend_full_t;
+
+  function automatic exp_t to_exp(input integer value);
+    to_exp = exp_t'(value);
+  endfunction
+
+  function automatic shamt_t to_shamt(input integer value);
+    to_shamt = shamt_t'(value);
+  endfunction
+
   // ---------------
   // Input pipeline
   // ---------------
@@ -209,15 +225,16 @@ module fpnew_fma_multi #(
       for (genvar op = 0; op < 3; op++) begin : gen_operands
         assign trimmed_ops[op]       = operands_q[op][FP_WIDTH-1:0];
         assign fmt_sign[fmt][op]     = operands_q[op][FP_WIDTH-1];
-        assign fmt_exponent[fmt][op] = signed'({1'b0, operands_q[op][MAN_BITS+:EXP_BITS]});
-        assign fmt_mantissa[fmt][op] = {info_q[fmt][op].is_normal, operands_q[op][MAN_BITS-1:0]} <<
-                                       (SUPER_MAN_BITS - MAN_BITS); // move to left of mantissa
+        assign fmt_exponent[fmt][op] = super_exp_t'({1'b0, operands_q[op][MAN_BITS+:EXP_BITS]});
+        assign fmt_mantissa[fmt][op] = super_man_t'(({info_q[fmt][op].is_normal,
+                                                      operands_q[op][MAN_BITS-1:0]}) <<
+                                                    (SUPER_MAN_BITS - MAN_BITS));
       end
     end else begin : inactive_format
-      assign info_q[fmt]                 = '{default: fpnew_pkg::DONT_CARE}; // format disabled
-      assign fmt_sign[fmt]               = fpnew_pkg::DONT_CARE;             // format disabled
-      assign fmt_exponent[fmt]           = '{default: fpnew_pkg::DONT_CARE}; // format disabled
-      assign fmt_mantissa[fmt]           = '{default: fpnew_pkg::DONT_CARE}; // format disabled
+      assign info_q[fmt]       = '{default: 'x};
+      assign fmt_sign[fmt]     = 'x;
+      assign fmt_exponent[fmt] = 'x;
+      assign fmt_mantissa[fmt] = 'x;
     end
   end
 
@@ -254,7 +271,7 @@ module fpnew_fma_multi #(
       fpnew_pkg::FNMSUB: operand_a.sign = ~operand_a.sign; // invert sign of product
       fpnew_pkg::ADD,
       fpnew_pkg::ADDS: begin // Set multiplicand to +1
-        operand_a = '{sign: 1'b0, exponent: fpnew_pkg::bias(src_fmt_q), mantissa: '0};
+        operand_a = '{sign: 1'b0, exponent: super_exp_t'(fpnew_pkg::bias(src_fmt_q)), mantissa: '0};
         info_a    = '{is_normal: 1'b1, is_boxed: 1'b1, default: 1'b0}; //normal, boxed value.
       end
       fpnew_pkg::MUL: begin // Set addend to +0 or -0, depending whether the rounding mode is RDN
@@ -265,12 +282,12 @@ module fpnew_fma_multi #(
         info_c    = '{is_zero: 1'b1, is_boxed: 1'b1, default: 1'b0}; //zero, boxed value.
       end
       default: begin // propagate don't cares
-        operand_a  = '{default: fpnew_pkg::DONT_CARE};
-        operand_b  = '{default: fpnew_pkg::DONT_CARE};
-        operand_c  = '{default: fpnew_pkg::DONT_CARE};
-        info_a     = '{default: fpnew_pkg::DONT_CARE};
-        info_b     = '{default: fpnew_pkg::DONT_CARE};
-        info_c     = '{default: fpnew_pkg::DONT_CARE};
+        operand_a  = 'x;
+        operand_b  = 'x;
+        operand_c  = 'x;
+        info_a     = 'x;
+        info_b     = 'x;
+        info_c     = 'x;
       end
     endcase
   end
@@ -372,41 +389,46 @@ module fpnew_fma_multi #(
   // ---------------------------
   // Initial exponent data path
   // ---------------------------
-  logic signed [EXP_WIDTH-1:0] exponent_a, exponent_b, exponent_c;
-  logic signed [EXP_WIDTH-1:0] exponent_addend, exponent_product, exponent_difference;
-  logic signed [EXP_WIDTH-1:0] tentative_exponent;
+  exp_t exponent_a, exponent_b, exponent_c;
+  exp_t exponent_addend, exponent_product, exponent_difference;
+  exp_t tentative_exponent;
+  exp_t bias_src, bias_src2, bias_dst;
+  exp_t normal_adjust_c, subnormal_adjust_a, subnormal_adjust_b;
 
   // Zero-extend exponents into signed container - implicit width extension
-  assign exponent_a = signed'({1'b0, operand_a.exponent});
-  assign exponent_b = signed'({1'b0, operand_b.exponent});
-  assign exponent_c = signed'({1'b0, operand_c.exponent});
+  assign exponent_a = exp_t'({1'b0, operand_a.exponent});
+  assign exponent_b = exp_t'({1'b0, operand_b.exponent});
+  assign exponent_c = exp_t'({1'b0, operand_c.exponent});
+  assign bias_src   = to_exp(fpnew_pkg::bias(src_fmt_q));
+  assign bias_src2  = to_exp(fpnew_pkg::bias(src2_fmt_q));
+  assign bias_dst   = to_exp(fpnew_pkg::bias(dst_fmt_q));
+  assign normal_adjust_c   = to_exp(info_c.is_normal ? 0 : 1);
+  assign subnormal_adjust_a = to_exp(info_a.is_subnormal ? 1 : 0);
+  assign subnormal_adjust_b = to_exp(info_b.is_subnormal ? 1 : 0);
 
   // Calculate internal exponents from encoded values. Real exponents are (ex = Ex - bias + 1 - nx)
   // with Ex the encoded exponent and nx the implicit bit. Internal exponents are biased to dst fmt.
-  assign exponent_addend = info_c.is_zero ? 1 // in case the addend is zero, set minimum exp
-                           : signed'(exponent_c + $signed({1'b0, ~info_c.is_normal}) // 0 as subnorm
-                                     - signed'(fpnew_pkg::bias(src2_fmt_q))
-                                     + signed'(fpnew_pkg::bias(dst_fmt_q))); // rebias for dst fmt
+  assign exponent_addend = info_c.is_zero ? to_exp(1)
+                           : exp_t'(exponent_c + normal_adjust_c - bias_src2 + bias_dst);
   // Biased product exponent is the sum of encoded exponents minus the bias.
   assign exponent_product = (info_a.is_zero || info_b.is_zero) // in case the product is zero, set minimum exp.
-                            ? 2 - signed'(fpnew_pkg::bias(dst_fmt_q))
-                            : signed'(exponent_a + info_a.is_subnormal
-                                      + exponent_b + info_b.is_subnormal
-                                      - 2*signed'(fpnew_pkg::bias(src_fmt_q))
-                                      + signed'(fpnew_pkg::bias(dst_fmt_q))); // rebias for dst fmt
+                            ? exp_t'(to_exp(2) - bias_dst)
+                            : exp_t'(exponent_a + subnormal_adjust_a
+                                      + exponent_b + subnormal_adjust_b
+                                      - bias_src - bias_src + bias_dst);
   // Exponent difference is the addend exponent minus the product exponent
   assign exponent_difference = exponent_addend - exponent_product;
 
   // Shift amount for addend based on exponents (unsigned as only right shifts)
-  logic [SHIFT_AMOUNT_WIDTH-1:0] addend_shamt;
+  shamt_t addend_shamt;
 
   always_comb begin : addend_shift_amount
     // Product-anchored case, saturated shift (addend is only in the sticky bit)
-    if (exponent_difference <= signed'(-2 * PRECISION_BITS - 1))
-      addend_shamt = 3 * PRECISION_BITS + 4;
+    if (exponent_difference <= to_exp(-(2 * PRECISION_BITS + 1)))
+      addend_shamt = to_shamt(3 * PRECISION_BITS + 4);
     // Addend and product will have mutual bits to add
-    else if (exponent_difference <= signed'(PRECISION_BITS + 2))
-      addend_shamt = unsigned'(signed'(PRECISION_BITS) + 3 - exponent_difference);
+    else if (exponent_difference <= to_exp(PRECISION_BITS + 2))
+      addend_shamt = shamt_t'(to_exp(PRECISION_BITS + 3) - exponent_difference);
     // Addend-anchored case, saturated shift (product is only in the sticky bit)
     else
       addend_shamt = 0;
@@ -415,7 +437,7 @@ module fpnew_fma_multi #(
   // LZC for addend normalization
   logic        [$clog2(SUPER_MAN_BITS)-1:0] addend_lzc_count;
   logic        [$clog2(SUPER_MAN_BITS)  :0] addend_lzc_count_sgn;
-  logic        [SHIFT_AMOUNT_WIDTH    -1:0] addend_normalize_shamt;
+  shamt_t addend_normalize_shamt;
 
   // Leading zero counter for addend normalization
   lzc #(
@@ -435,26 +457,28 @@ module fpnew_fma_multi #(
     if (info_c.is_normal || info_c.is_zero) begin
       addend_normalize_shamt = 0;
     // subnormal and will still be subnormal in destination format (no positive rebias added to exponent)
-    end else if (exponent_addend <= 1) begin
+    end else if (exponent_addend <= to_exp(1)) begin
       addend_normalize_shamt = 0;
     // subnormal and will likely be normal in destination format in addend-anchored case
-    end else if (addend_lzc_count_sgn + 1 < exponent_addend) begin
-      addend_normalize_shamt = addend_lzc_count + 1;
+    end else if (exp_t'(addend_lzc_count_sgn) + to_exp(1) < exponent_addend) begin
+      addend_normalize_shamt = shamt_t'(addend_lzc_count) + to_shamt(1);
     // subnormal and will still be subnormal in destination format (insufficient positive rebias added to exponent)
     end else begin
-      addend_normalize_shamt = exponent_addend - 1;
+      addend_normalize_shamt = shamt_t'(exponent_addend - to_exp(1));
     end
   end
 
   // The tentative exponent will be the larger of the product or addend exponent
-  assign tentative_exponent = (exponent_difference > 0) ? exponent_addend - addend_normalize_shamt : exponent_product;
+  assign tentative_exponent = (exponent_difference > 0)
+                            ? exp_t'(exponent_addend - exp_t'(addend_normalize_shamt))
+                            : exponent_product;
 
   // ------------------
   // Product data path
   // ------------------
   logic [PRECISION_BITS-1:0]   mantissa_a, mantissa_b, mantissa_c;
   logic [2*PRECISION_BITS-1:0] product;             // the p*p product is 2p bits wide
-  logic [3*PRECISION_BITS+3:0] product_shifted;     // addends are 3p+4 bit wide (including G/R)
+  sum_t product_shifted;     // addends are 3p+4 bit wide (including G/R)
 
   // Add implicit bits to mantissae
   assign mantissa_a = {info_a.is_normal, operand_a.mantissa};
@@ -467,15 +491,15 @@ module fpnew_fma_multi #(
   // Product is placed into a 3p+4 bit wide vector, padded with 2 bits for round and sticky:
   // | 000...000 | product | RS |
   //  <-  p+2  -> <-  2p -> < 2>
-  assign product_shifted = product << 2; // constant shift
+  assign product_shifted = sum_t'(product) << 2; // constant shift
 
   // -----------------
   // Addend data path
   // -----------------
-  logic [3*PRECISION_BITS+3:0] addend_after_shift;  // upper 3p+4 bits are needed to go on
+  sum_t                        addend_after_shift;  // upper 3p+4 bits are needed to go on
   logic [PRECISION_BITS-1:0]   addend_sticky_bits;  // up to p bit of shifted addend are sticky
   logic                        sticky_before_add;   // they are compressed into a single sticky bit
-  logic [3*PRECISION_BITS+3:0] addend_shifted;      // addends are 3p+4 bit wide (including G/R)
+  sum_t                        addend_shifted;      // addends are 3p+4 bit wide (including G/R)
   logic                        inject_carry_in;     // inject carry for subtractions if needed
 
   // In parallel, the addend is right-shifted according to the exponent difference. Up to p bits are
@@ -487,7 +511,7 @@ module fpnew_fma_multi #(
   // | 000..........000 | mantissa_c | 000...............0GR |  sticky bits  |
   //  <- addend_shamt -> <-    p   -> <- 2p+4-addend_shamt -> <-  up to p  ->
   assign {addend_after_shift, addend_sticky_bits} =
-      (mantissa_c << (3 * PRECISION_BITS + 4)) >> addend_shamt;
+      (addend_full_t'(mantissa_c) << (3 * PRECISION_BITS + 4)) >> addend_shamt;
 
   assign sticky_before_add     = (| addend_sticky_bits);
 
@@ -498,13 +522,14 @@ module fpnew_fma_multi #(
   // ------
   // Adder
   // ------
-  logic [3*PRECISION_BITS+4:0] sum_pos, sum_neg; // added one bit for the carry
+  sum_ext_t                    sum_pos, sum_neg; // added one bit for the carry
   logic                        sum_carry;        // observe carry bit from positive sum for sign fixing
-  logic [3*PRECISION_BITS+3:0] sum;              // discard carry as sum won't overflow
+  sum_t                        sum;              // discard carry as sum won't overflow
   logic                        final_sign;
 
   //Mantissa adder (ab+c). In normal addition, it cannot overflow.
-  assign sum_pos = product_shifted + addend_shifted + inject_carry_in;
+  assign sum_pos = sum_ext_t'(product_shifted) + sum_ext_t'(addend_shifted)
+                 + sum_ext_t'(inject_carry_in);
   assign sum_carry = sum_pos[3*PRECISION_BITS+4];
 
   // Parallel adder for negative sum (only used for effective subtractions).
@@ -513,7 +538,7 @@ module fpnew_fma_multi #(
   assign sum_neg = addend_after_shift - product_shifted;
 
   // Complement negative sum (can only happen in subtraction -> overflows for positive results)
-  assign sum        = (effective_subtraction && ~sum_carry) ? sum_neg : sum_pos;
+  assign sum        = sum_t'((effective_subtraction && ~sum_carry) ? sum_neg : sum_pos);
 
   // In case of a mispredicted subtraction result, do a sign flip
   assign final_sign = (effective_subtraction && (sum_carry == tentative_sign))
@@ -525,12 +550,12 @@ module fpnew_fma_multi #(
   // ---------------
   // Pipeline output signals as non-arrays
   logic                          effective_subtraction_q;
-  logic signed [EXP_WIDTH-1:0]   exponent_product_q;
-  logic signed [EXP_WIDTH-1:0]   exponent_difference_q;
-  logic signed [EXP_WIDTH-1:0]   tentative_exponent_q;
-  logic [SHIFT_AMOUNT_WIDTH-1:0] addend_shamt_q;
+  exp_t                         exponent_product_q;
+  exp_t                         exponent_difference_q;
+  exp_t                         tentative_exponent_q;
+  shamt_t                       addend_shamt_q;
   logic                          sticky_before_add_q;
-  logic [3*PRECISION_BITS+3:0]   sum_q;
+  sum_t                          sum_q;
   logic                          final_sign_q;
   fpnew_pkg::fp_format_e         dst_fmt_q2;
   fpnew_pkg::roundmode_e         rnd_mode_q;
@@ -539,12 +564,12 @@ module fpnew_fma_multi #(
   fpnew_pkg::status_t            special_status_q;
   // Internal pipeline signals, index i holds signal after i register stages
   logic                  [0:NUM_MID_REGS]                         mid_pipe_eff_sub_q;
-  logic signed           [0:NUM_MID_REGS][EXP_WIDTH-1:0]          mid_pipe_exp_prod_q;
-  logic signed           [0:NUM_MID_REGS][EXP_WIDTH-1:0]          mid_pipe_exp_diff_q;
-  logic signed           [0:NUM_MID_REGS][EXP_WIDTH-1:0]          mid_pipe_tent_exp_q;
-  logic                  [0:NUM_MID_REGS][SHIFT_AMOUNT_WIDTH-1:0] mid_pipe_add_shamt_q;
+  exp_t                  [0:NUM_MID_REGS]                         mid_pipe_exp_prod_q;
+  exp_t                  [0:NUM_MID_REGS]                         mid_pipe_exp_diff_q;
+  exp_t                  [0:NUM_MID_REGS]                         mid_pipe_tent_exp_q;
+  shamt_t                [0:NUM_MID_REGS]                         mid_pipe_add_shamt_q;
   logic                  [0:NUM_MID_REGS]                         mid_pipe_sticky_q;
-  logic                  [0:NUM_MID_REGS][3*PRECISION_BITS+3:0]   mid_pipe_sum_q;
+  sum_t                  [0:NUM_MID_REGS]                         mid_pipe_sum_q;
   logic                  [0:NUM_MID_REGS]                         mid_pipe_final_sign_q;
   fpnew_pkg::roundmode_e [0:NUM_MID_REGS]                         mid_pipe_rnd_mode_q;
   fpnew_pkg::fp_format_e [0:NUM_MID_REGS]                         mid_pipe_dst_fmt_q;
@@ -632,15 +657,15 @@ module fpnew_fma_multi #(
   logic signed [LZC_RESULT_WIDTH:0]   leading_zero_count_sgn; // signed leading-zero count
   logic                               lzc_zeroes;             // in case only zeroes found
 
-  logic        [SHIFT_AMOUNT_WIDTH-1:0] norm_shamt; // Normalization shift amount
-  logic signed [EXP_WIDTH-1:0]          normalized_exponent;
+  shamt_t norm_shamt; // Normalization shift amount
+  exp_t   normalized_exponent;
 
-  logic [3*PRECISION_BITS+4:0] sum_shifted;       // result after first normalization shift
+  sum_ext_t                 sum_shifted;       // result after first normalization shift
   logic [PRECISION_BITS:0]     final_mantissa;    // final mantissa before rounding with round bit
   logic [2*PRECISION_BITS+2:0] sum_sticky_bits;   // remaining 2p+3 sticky bits after normalization
   logic                        sticky_after_norm; // sticky bit after normalization
 
-  logic signed [EXP_WIDTH-1:0] final_exponent;
+  exp_t final_exponent;
 
   assign sum_lower = sum_q[LOWER_SUM_WIDTH-1:0];
 
@@ -659,16 +684,18 @@ module fpnew_fma_multi #(
   // Normalization shift amount based on exponents and LZC (unsigned as only left shifts)
   always_comb begin : norm_shift_amount
     // Product-anchored case or cancellations require LZC
-    if ((exponent_difference_q <= 0) || (effective_subtraction_q && (exponent_difference_q <= 2))) begin
+    if ((exponent_difference_q <= to_exp(0)) ||
+        (effective_subtraction_q && (exponent_difference_q <= to_exp(2)))) begin
       // Normal result (biased exponent > 0 and not a zero)
-      if ((exponent_product_q - leading_zero_count_sgn + 1 >= 0) && !lzc_zeroes) begin
+      if ((exponent_product_q - exp_t'(leading_zero_count_sgn) + to_exp(1) >= to_exp(0)) &&
+          !lzc_zeroes) begin
         // Undo initial product shift, remove the counted zeroes
-        norm_shamt          = PRECISION_BITS + 2 + leading_zero_count;
-        normalized_exponent = exponent_product_q - leading_zero_count_sgn + 1; // account for shift
+        norm_shamt          = to_shamt(PRECISION_BITS + 2) + shamt_t'(leading_zero_count);
+        normalized_exponent = exponent_product_q - exp_t'(leading_zero_count_sgn) + to_exp(1);
       // Subnormal result
       end else begin
         // Cap the shift distance to align mantissa with minimum exponent
-        norm_shamt          = unsigned'(signed'(PRECISION_BITS + 2 + exponent_product_q));
+        norm_shamt          = shamt_t'(to_exp(PRECISION_BITS + 2) + exponent_product_q);
         normalized_exponent = 0; // subnormals encoded as 0
       end
     // Addend-anchored case
@@ -679,26 +706,26 @@ module fpnew_fma_multi #(
   end
 
   // Do the large normalization shift
-  assign sum_shifted       = sum_q << norm_shamt;
+  assign sum_shifted       = sum_ext_t'(sum_q) << norm_shamt;
 
   // The addend-anchored case needs a 1-bit normalization since the leading-one can be to the left
   // or right of the (non-carry) MSB of the sum.
   always_comb begin : small_norm
     // Default assignment, discarding carry bit
-    {final_mantissa, sum_sticky_bits} = sum_shifted;
+    {final_mantissa, sum_sticky_bits} = sum_t'(sum_shifted);
     final_exponent                    = normalized_exponent;
 
     // The normalized sum has overflown, align right and fix exponent
     if (sum_shifted[3*PRECISION_BITS+4]) begin // check the carry bit
-      {final_mantissa, sum_sticky_bits} = sum_shifted >> 1;
-      final_exponent                    = normalized_exponent + 1;
+      {final_mantissa, sum_sticky_bits} = sum_t'(sum_shifted >> 1);
+      final_exponent                    = normalized_exponent + to_exp(1);
     // The normalized sum is normal, nothing to do
     end else if (sum_shifted[3*PRECISION_BITS+3]) begin // check the sum MSB
       // do nothing
     // The normalized sum is still denormal, align left - unless the result is not already subnormal
-    end else if (normalized_exponent > 1) begin
-      {final_mantissa, sum_sticky_bits} = sum_shifted << 1;
-      final_exponent                    = normalized_exponent - 1;
+    end else if (normalized_exponent > to_exp(1)) begin
+      {final_mantissa, sum_sticky_bits} = sum_t'(sum_shifted << 1);
+      final_exponent                    = normalized_exponent - to_exp(1);
     // Otherwise we're denormal
     end else begin
       final_exponent = '0;

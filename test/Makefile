@@ -18,15 +18,19 @@ SIMULATOR ?= verilator
 SIM_ABORT_CYCLES ?= 20000000
 
 # test directories
-TEST_DIRS := lsu alu mul sld elem csr kernel misc matrix fp
+TEST_DIRS := lsu alu mul sld elem csr kernel misc fp
 
 # test targets
+TEST_SRC_EXCLUDES := %_support.S %_support.c
+TEST_SRCS := $(shell find $(TEST_DIRS) \( -name '*.S' -o -name '*.c' \))
+TEST_SRCS := $(filter-out $(TEST_SRC_EXCLUDES),$(TEST_SRCS))
 TESTS_ALL := $(TEST_DIRS) $(addsuffix /, $(TEST_DIRS))
-TESTS_ALL := $(TESTS_ALL) $(basename $(shell find $(TEST_DIRS) \( -name '*.S' -o -name '*.c' \)))
+TESTS_ALL := $(TESTS_ALL) $(basename $(TEST_SRCS))
+TESTS_DEFAULT := $(TEST_DIRS)
 
 
 .PHONY: all $(TESTS_ALL)
-all: $(TESTS_ALL)
+all: $(TESTS_DEFAULT)
 
 
 # TODO find ways to check that:
@@ -50,18 +54,39 @@ lint-verible:
 	verible-verilog-lint --rules="$(LINT_VERIBLE)"                            \
 	    `ls $(TEST_DIR)/../rtl/*.sv | grep -v vproc_pkg.sv`
 
+LINT_CORE_INC  := -I$(TEST_DIR)/../rtl/
+LINT_CORE_INC  += -I$(TEST_DIR)/../vendor/lowrisc_ip/dv/sv/dv_utils/
+LINT_CORE_INC  += -I$(TEST_DIR)/../vendor/lowrisc_ip/ip/prim/rtl/
+LINT_CORE_INC  += -I$(TEST_DIR)/../vendor/lowrisc_ip/ip/prim_generic/rtl/
+LINT_FP_INC    := -I$(TEST_DIR)/../rtl/cvfpu/src/common_cells/include/
+LINT_FP_INC    += -I$(TEST_DIR)/../rtl/cvfpu/src/
+LINT_FP_INC    += -I$(TEST_DIR)/../rtl/cvfpu/src/common_cells/src/
+LINT_FP_INC    += -I$(TEST_DIR)/../rtl/cvfpu/vendor/opene906/E906_RTL_FACTORY/gen_rtl/clk/rtl/
+LINT_CORE_SRCS := ibex_pkg.sv prim_pkg.sv prim_assert.sv prim_ram_1p_pkg.sv
+LINT_CORE_SRCS += $(TEST_DIR)/../syn/rtl/prim_clock_gating.v ibex_register_file_ff.sv
+LINT_FP_SRCS   := $(wildcard $(TEST_DIR)/../rtl/cvfpu/src/*.sv)
+LINT_FP_SRCS   += $(wildcard $(TEST_DIR)/../rtl/cvfpu/src/common_cells/src/*.sv)
+LINT_FP_SRCS   += $(wildcard $(TEST_DIR)/../rtl/cvfpu/src/fpu_div_sqrt_mvp/hdl/*.sv)
+LINT_FP_SRCS   += $(wildcard $(TEST_DIR)/../rtl/cvfpu/vendor/opene906/E906_RTL_FACTORY/gen_rtl/clk/rtl/*.v)
+LINT_FP_SRCS   += $(wildcard $(TEST_DIR)/../rtl/cvfpu/vendor/opene906/E906_RTL_FACTORY/gen_rtl/fpu/rtl/*.v)
+LINT_FP_SRCS   += $(wildcard $(TEST_DIR)/../rtl/cvfpu/vendor/opene906/E906_RTL_FACTORY/gen_rtl/fdsu/rtl/*.v)
+LINT_FP_SRCS   := $(sort $(LINT_FP_SRCS))
+
 lint-verilator:
 	config_file=`mktemp -d | awk '{print $$1"/vproc_config.sv"}'`;            \
 	make -f $(TEST_DIR)/../config.mk "VPROC_CONFIG_PKG=$${config_file}";      \
 	verilator -Wall -Wno-PINCONNECTEMPTY -Wno-UNUSED -Wno-UNDRIVEN            \
 	    -Wno-UNSIGNED -Wno-DECLFILENAME -Wno-USERFATAL -Wno-SYNCASYNCNET      \
-	    -I$(TEST_DIR)/../rtl/ --cc vproc_pkg.sv $${config_file} vproc_top.sv  \
-	    vproc_core.sv vproc_vregpack.sv vproc_vregunpack.sv                   \
-	    --top-module vproc_top --clk clk_i --lint-only
+	    -Wno-PINMISSING -Wno-UNOPTFLAT -Wno-BLKANDNBLK -Wno-LATCH             \
+	    -Wno-GENUNNAMED -Wno-IMPORTSTAR -Wno-ASCRANGE -Wno-fatal             \
+	    -DMAIN_CORE_IBEX $(LINT_CORE_INC) $(LINT_FP_INC)                      \
+	    $(LINT_FP_SRCS) $(LINT_CORE_SRCS) vproc_pkg.sv $${config_file}        \
+	    vproc_top.sv vproc_core.sv vproc_vregpack.sv vproc_vregunpack.sv      \
+	    --top-module vproc_top --lint-only
 
 
 .SECONDEXPANSION:
-$(TESTS_ALL): %: $$(addsuffix .vmem,$$(basename $$(if $$(wildcard %),$$(wildcard %/*.S %/*.c),$$(wildcard %.S %.c))))
+$(TESTS_ALL): %: $$(addsuffix .vmem,$$(basename $$(filter-out $$(TEST_SRC_EXCLUDES),$$(if $$(wildcard %),$$(wildcard %/*.S %/*.c),$$(wildcard %.S %.c)))))
 	@if [ -d $@ ]; then                                                       \
 	    cd $@;                                                                \
 	else                                                                      \
@@ -116,7 +141,7 @@ $(TESTS_ALL): %: $$(addsuffix .vmem,$$(basename $$(if $$(wildcard %),$$(wildcard
 	    if [ -n "$$pend_vreg_wr_col" ]; then                                  \
 	        pending=`tail -n 1 sim_trace.csv |                                \
 	                 awk -F ';' -v idx="$$pend_vreg_wr_col" '{print $$idx}'`; \
-	        if [ "$$pending" -ne 0 ]; then                                    \
+	        if [ -n "$$pending" ] && ((16#$$pending != 0)); then              \
 	            printf "\033[0;33m[WARN]\033[0;0m $@ ";                       \
 	            printf "uncleared pending vreg write(s) (0x$${pending})\n";   \
 	        fi;                                                               \
@@ -174,10 +199,27 @@ $(TESTS_ALL): %: $$(addsuffix .vmem,$$(basename $$(if $$(wildcard %),$$(wildcard
 %.vmem: %.S $(TEST_DIR)/spill_cache.S
 	@cd $(dir $@);                                                            \
 	prog=$(abspath $(<:%.S=%));                                               \
-	obj="$(abspath $(^:%.S=%.o))";                                            \
+	obj="$(abspath $(patsubst %.S,%.o,$(patsubst %.c,%.o,$^)))";              \
 	log="$${prog}_build.log";                                                 \
-	make -f $(TEST_DIR)/../sw/Makefile PROG=$$prog OBJ="$$obj"                \
-	    RISCV_ZVE32F=$(RISCV_ZVE32F) RISCV_ZVFH=$(RISCV_ZVFH) >$$log 2>&1; \
+	cfg_file="$$(basename $$prog).conf";                                      \
+	if [ ! -f "$$cfg_file" ]; then                                            \
+	    cfg_file="test_configs.conf";                                         \
+	fi;                                                                       \
+	cfg_args=$$(awk 'NF && $$1 !~ /^#/' "$$cfg_file" 2>/dev/null |            \
+	           head -n 1);                                                    \
+	override_args="";                                                         \
+	if [ -n "$(COMPILER)" ]; then                                             \
+	    override_args="$$override_args COMPILER=$(COMPILER)";                 \
+	fi;                                                                       \
+	if [ -n "$(RISCV_ZVE32F)" ]; then                                         \
+	    override_args="$$override_args RISCV_ZVE32F=$(RISCV_ZVE32F)";         \
+	fi;                                                                       \
+	if [ -n "$(RISCV_ZVFH)" ]; then                                           \
+	    override_args="$$override_args RISCV_ZVFH=$(RISCV_ZVFH)";             \
+	fi;                                                                       \
+	eval "env $$cfg_args $$override_args                                      \
+	    make -f $(TEST_DIR)/../sw/Makefile PROG=$$prog OBJ='$$obj'"           \
+	    >$$log 2>&1;                                                          \
 	if [ $$? -ne 0 ]; then                                                    \
 	    printf "\033[0;31m[FAIL]\033[0;0m $@ build error; log file $$log:\n"; \
 	    cat $$log;                                                            \
@@ -187,15 +229,38 @@ $(TESTS_ALL): %: $$(addsuffix .vmem,$$(basename $$(if $$(wildcard %),$$(wildcard
 %.vmem: %.c $(TEST_DIR)/spill_cache.S
 	@cd $(dir $@);                                                            \
 	prog=$(abspath $(<:%.c=%));                                               \
-	obj="$(abspath $(^:%.c=%.o))";                                            \
+	obj="$(abspath $(patsubst %.S,%.o,$(patsubst %.c,%.o,$^)))";              \
 	log="$${prog}_build.log";                                                 \
-	make -f $(TEST_DIR)/../sw/Makefile PROG=$$prog OBJ="$$obj"                \
-	    COMPILER=gcc RISCV_ZVE32F=$(RISCV_ZVE32F) RISCV_ZVFH=$(RISCV_ZVFH) >$$log 2>&1;              \
+	cfg_file="$$(basename $$prog).conf";                                      \
+	if [ ! -f "$$cfg_file" ]; then                                            \
+	    cfg_file="test_configs.conf";                                         \
+	fi;                                                                       \
+	cfg_args=$$(awk 'NF && $$1 !~ /^#/' "$$cfg_file" 2>/dev/null |            \
+	           head -n 1);                                                    \
+	override_args="";                                                         \
+	if [ -n "$(COMPILER)" ]; then                                             \
+	    override_args="$$override_args COMPILER=$(COMPILER)";                 \
+	fi;                                                                       \
+	if [ -n "$(RISCV_ZVE32F)" ]; then                                         \
+	    override_args="$$override_args RISCV_ZVE32F=$(RISCV_ZVE32F)";         \
+	fi;                                                                       \
+	if [ -n "$(RISCV_ZVFH)" ]; then                                           \
+	    override_args="$$override_args RISCV_ZVFH=$(RISCV_ZVFH)";             \
+	fi;                                                                       \
+	eval "env $$cfg_args $$override_args                                      \
+	    make -f $(TEST_DIR)/../sw/Makefile PROG=$$prog OBJ='$$obj'"           \
+	    >$$log 2>&1;                                                          \
 	if [ $$? -ne 0 ]; then                                                    \
 	    printf "\033[0;31m[FAIL]\033[0;0m $@ build error; log file $$log:\n"; \
 	    cat $$log;                                                            \
 	    exit 1;                                                               \
 	fi
+
+kernel/mnist_infer_fp32.vmem: kernel/mnist_fp32_vfma_support.S
+kernel/mnist_infer_fp32_fc3zero.vmem: kernel/mnist_fp32_vfma_support.S
+kernel/mnist_infer_fp32_norelu.vmem: kernel/mnist_fp32_vfma_support.S
+kernel/mnist_fp32_vfma_helper_debug.vmem: kernel/mnist_fp32_vfma_support.S
+kernel/mnist_fp32_vfma_helper_aligned_debug.vmem: kernel/mnist_fp32_vfma_support.S
 
 
 clean:

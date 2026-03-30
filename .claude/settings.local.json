@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(make:*)",
+      "Bash(find:*)",
+      "Bash(done)",
+      "Bash(ls:*)",
+      "Bash(while:*)",
+      "Bash(do ref=\"$dump%.dump.vmem.ref.vmem\")",
+      "Bash(if diff:*)",
+      "Bash(fi:*)",
+      "Bash(git config:*)",
+      "Bash(gh:*)",
+      "Bash(git remote set-url:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
+    ]
+  }
+}

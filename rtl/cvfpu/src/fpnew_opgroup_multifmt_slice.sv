@@ -126,13 +126,13 @@ FP8. Please use the PULP DivSqrt unit when in need of div/sqrt operations on FP8
   assign dst_fmt_is_int = (OpGroup == fpnew_pkg::CONV) & (op_i == fpnew_pkg::F2I);
   assign dst_is_cpk     = (OpGroup == fpnew_pkg::CONV) & (op_i == fpnew_pkg::CPKAB ||
                                                           op_i == fpnew_pkg::CPKCD);
-  assign dst_vec_op     = (OpGroup == fpnew_pkg::CONV) & {(op_i == fpnew_pkg::CPKCD), op_mod_i};
+  assign dst_vec_op     = {2{OpGroup == fpnew_pkg::CONV}} & {(op_i == fpnew_pkg::CPKCD), op_mod_i};
 
   assign is_up_cast   = (fpnew_pkg::fp_width(dst_fmt_i) > fpnew_pkg::fp_width(src_fmt_i));
   assign is_down_cast = (fpnew_pkg::fp_width(dst_fmt_i) < fpnew_pkg::fp_width(src_fmt_i));
 
   // The destination format is the int format for F2I casts
-  assign dst_fmt    = dst_fmt_is_int ? int_fmt_i : dst_fmt_i;
+  assign dst_fmt    = dst_fmt_is_int ? FMT_BITS'(int_fmt_i) : FMT_BITS'(dst_fmt_i);
 
   // The data sent along consists of the vectorial flag and format bits
   assign aux_data      = {dst_fmt_is_int, vectorial_op, dst_fmt};

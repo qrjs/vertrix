@@ -29,6 +29,11 @@ module outer_product_matrix_unit #(
 
     localparam int unsigned MAT_DIM  = 8;
     localparam int unsigned BYTES_PER_ACCESS = MEM_WIDTH / 8;
+    localparam int unsigned ROW_BYTES = MAT_DIM;
+    localparam int unsigned CHUNKS_PER_ROW = (ROW_BYTES + BYTES_PER_ACCESS - 1) / BYTES_PER_ACCESS;
+    localparam int unsigned CHUNK_CNT_W = (CHUNKS_PER_ROW > 1) ? $clog2(CHUNKS_PER_ROW) : 1;
+    localparam logic [CHUNK_CNT_W-1:0] LAST_CHUNK = CHUNK_CNT_W'(CHUNKS_PER_ROW - 1);
+    localparam logic [2:0]             LAST_ROW   = 3'(MAT_DIM - 1);
 
     localparam logic [6:0] OPCODE_CUSTOM0 = 7'b0001011;
     localparam logic [2:0] FUNCT3_MVIN    = 3'b000;
@@ -55,6 +60,7 @@ module outer_product_matrix_unit #(
     state_e state_q, state_d;
 
     logic [2:0]  row_cnt_q, row_cnt_d;
+    logic [CHUNK_CNT_W-1:0] chunk_cnt_q, chunk_cnt_d;
     logic [1:0]  mat_sel_q, mat_sel_d;
     logic [31:0] base_addr_q, base_addr_d;
     logic [2:0]  funct3_q, funct3_d;
@@ -169,6 +175,7 @@ module outer_product_matrix_unit #(
     always_comb begin
         state_d = state_q;
         row_cnt_d = row_cnt_q;
+        chunk_cnt_d = chunk_cnt_q;
         mat_sel_d = mat_sel_q;
         base_addr_d = base_addr_q;
         funct3_d = funct3_q;
@@ -196,10 +203,12 @@ module outer_product_matrix_unit #(
 
                     case (funct3)
                         FUNCT3_MVIN: begin
+                            chunk_cnt_d = '0;
                             state_d = ST_LOAD_REQ;
                         end
                         FUNCT3_MVOUT: begin
                             row_cnt_d = 3'b0;
+                            chunk_cnt_d = '0;
                             state_d = ST_STORE_REQ;
                         end
                         FUNCT3_MATMUL: begin
@@ -216,7 +225,7 @@ module outer_product_matrix_unit #(
 
             ST_LOAD_REQ: begin
                 mem_req_o = 1'b1;
-                mem_addr_o = base_addr_q + {26'b0, row_cnt_q, 3'b0};
+                mem_addr_o = base_addr_q + row_cnt_q * ROW_BYTES + chunk_cnt_q * BYTES_PER_ACCESS;
                 mem_we_o = 1'b0;
                 mem_be_o = '1;
                 if (mem_gnt_i) begin
@@ -226,11 +235,18 @@ module outer_product_matrix_unit #(
 
             ST_LOAD_WAIT: begin
                 if (mem_rvalid_i) begin
-                    if (row_cnt_q == MAT_DIM - 1) begin
-                        row_cnt_d = 3'b0;
-                        state_d = ST_OP_MVIN;
+                    if (chunk_cnt_q == LAST_CHUNK) begin
+                        if (row_cnt_q == LAST_ROW) begin
+                            row_cnt_d = 3'b0;
+                            chunk_cnt_d = '0;
+                            state_d = ST_OP_MVIN;
+                        end else begin
+                            row_cnt_d = row_cnt_q + 1;
+                            chunk_cnt_d = '0;
+                            state_d = ST_LOAD_REQ;
+                        end
                     end else begin
-                        row_cnt_d = row_cnt_q + 1;
+                        chunk_cnt_d = chunk_cnt_q + 1;
                         state_d = ST_LOAD_REQ;
                     end
                 end
@@ -290,17 +306,28 @@ module outer_product_matrix_unit #(
 
             ST_STORE_REQ: begin
                 mem_req_o = 1'b1;
-                mem_addr_o = base_addr_q + {26'b0, row_cnt_q, 3'b0};
+                mem_addr_o = base_addr_q + row_cnt_q * ROW_BYTES + chunk_cnt_q * BYTES_PER_ACCESS;
                 mem_we_o = 1'b1;
-                mem_be_o = '1;
-                for (int i = 0; i < ELEMS_PER_STORE && i < MAT_DIM; i++) begin
-                    mem_wdata_o[i*8 +: 8] = sat8($signed(c_mem[{row_cnt_q, 3'(i)}]));
+                mem_be_o = '0;
+                for (int i = 0; i < ELEMS_PER_STORE; i++) begin
+                    int col_idx;
+                    col_idx = chunk_cnt_q * BYTES_PER_ACCESS + i;
+                    if (col_idx < MAT_DIM) begin
+                        mem_be_o[i] = 1'b1;
+                        mem_wdata_o[i*8 +: 8] = sat8($signed(c_mem[{row_cnt_q, 3'(col_idx)}]));
+                    end
                 end
                 if (mem_gnt_i) begin
-                    if (row_cnt_q == MAT_DIM - 1) begin
-                        state_d = ST_DONE;
+                    if (chunk_cnt_q == LAST_CHUNK) begin
+                        if (row_cnt_q == LAST_ROW) begin
+                            chunk_cnt_d = '0;
+                            state_d = ST_DONE;
+                        end else begin
+                            row_cnt_d = row_cnt_q + 1;
+                            chunk_cnt_d = '0;
+                        end
                     end else begin
-                        row_cnt_d = row_cnt_q + 1;
+                        chunk_cnt_d = chunk_cnt_q + 1;
                     end
                 end
             end
@@ -330,6 +357,7 @@ module outer_product_matrix_unit #(
         if (~rst_ni) begin
             state_q <= ST_IDLE;
             row_cnt_q <= '0;
+            chunk_cnt_q <= '0;
             mat_sel_q <= '0;
             base_addr_q <= '0;
             funct3_q <= '0;
@@ -339,6 +367,7 @@ module outer_product_matrix_unit #(
         end else begin
             state_q <= state_d;
             row_cnt_q <= row_cnt_d;
+            chunk_cnt_q <= chunk_cnt_d;
             mat_sel_q <= mat_sel_d;
             base_addr_q <= base_addr_d;
             funct3_q <= funct3_d;
@@ -347,11 +376,15 @@ module outer_product_matrix_unit #(
             matadd_cnt_q <= matadd_cnt_d;
 
             if (state_q == ST_LOAD_WAIT && mem_rvalid_i) begin
-                for (int i = 0; i < BYTES_PER_ACCESS && i < MAT_DIM; i++) begin
-                    if (mat_sel_q[0]) begin
-                        a_mem[{row_cnt_q, 3'(i)}] <= mem_rdata_i[i*8 +: 8];
-                    end else begin
-                        b_mem[{row_cnt_q, 3'(i)}] <= mem_rdata_i[i*8 +: 8];
+                for (int i = 0; i < BYTES_PER_ACCESS; i++) begin
+                    int col_idx;
+                    col_idx = chunk_cnt_q * BYTES_PER_ACCESS + i;
+                    if (col_idx < MAT_DIM) begin
+                        if (mat_sel_q[0]) begin
+                            a_mem[{row_cnt_q, 3'(col_idx)}] <= mem_rdata_i[i*8 +: 8];
+                        end else begin
+                            b_mem[{row_cnt_q, 3'(col_idx)}] <= mem_rdata_i[i*8 +: 8];
+                        end
                     end
                 end
             end

@@ -231,7 +231,7 @@ module fpnew_opgroup_fmt_slice #(
     assign slice_result[(unsigned'(lane)+1)*FP_WIDTH-1:unsigned'(lane)*FP_WIDTH] = local_result;
 
     // Create Classification results
-    if (TrueSIMDClass && SIMD_WIDTH >= 10) begin : vectorial_true_class // true vectorial class blocks are 10bits in size
+    if ((TrueSIMDClass != 0) && SIMD_WIDTH >= 10) begin : vectorial_true_class // true vectorial class blocks are 10bits in size
       assign slice_vec_class_result[lane*SIMD_WIDTH +: 10] = lane_class_mask[lane];
       assign slice_vec_class_result[(lane+1)*SIMD_WIDTH-1 -: SIMD_WIDTH-10] = '0;
     end else if ((lane+1)*8 <= Width) begin : vectorial_class // vectorial class blocks are 8bits in size
@@ -263,12 +263,12 @@ module fpnew_opgroup_fmt_slice #(
   assign result_is_vector = lane_vectorial[0];
   assign result_is_class  = lane_is_class[0];
 
-  assign slice_regular_result = $signed({extension_bit_o, slice_result});
+  assign slice_regular_result = Width'($signed({extension_bit_o, slice_result}));
 
   localparam int unsigned CLASS_VEC_BITS = (NUM_LANES*8 > Width) ? 8 * (Width / 8) : NUM_LANES*8;
 
   // Pad out unused vec_class bits if each classify result is on 8 bits
-  if (!(TrueSIMDClass && SIMD_WIDTH >= 10)) begin
+  if (!((TrueSIMDClass != 0) && SIMD_WIDTH >= 10)) begin
     if (CLASS_VEC_BITS < Width) begin : pad_vectorial_class
       assign slice_vec_class_result[Width-1:CLASS_VEC_BITS] = '0;
     end
@@ -276,7 +276,7 @@ module fpnew_opgroup_fmt_slice #(
 
   // localparam logic [Width-1:0] CLASS_VEC_MASK = 2**CLASS_VEC_BITS - 1;
 
-  assign slice_class_result = result_is_vector ? slice_vec_class_result : lane_class_mask[0];
+  assign slice_class_result = result_is_vector ? slice_vec_class_result : Width'(lane_class_mask[0]);
 
   // Select the proper result
   assign result_o = result_is_class ? slice_class_result : slice_regular_result;

@@ -362,8 +362,8 @@ module vproc_pipeline import vproc_pkg::*; #(
                 last_cycle_next     = ((pipe_in_state_i.emul == EMUL_1) & (COUNTER_W == 4));
                 alt_last_cycle_next = ((pipe_in_state_i.emul == EMUL_1) & (COUNTER_W == 4));
             `else
-                last_cycle_next     = ((pipe_in_state_i.emul == EMUL_1) & (COUNTER_W == 4)) | pipe_in_state_i.vl < MAX_OP_W/8;
-                alt_last_cycle_next = ((pipe_in_state_i.emul == EMUL_1) & (COUNTER_W == 4)) | pipe_in_state_i.vl < MAX_OP_W/8;
+                last_cycle_next     = ((pipe_in_state_i.emul == EMUL_1) & (COUNTER_W == 4)) | pipe_in_state_i.vl < CFG_VL_W'(MAX_OP_W/8);
+                alt_last_cycle_next = ((pipe_in_state_i.emul == EMUL_1) & (COUNTER_W == 4)) | pipe_in_state_i.vl < CFG_VL_W'(MAX_OP_W/8);
 
             `endif
         end else begin
@@ -403,13 +403,13 @@ module vproc_pipeline import vproc_pkg::*; #(
 
             //VL/(MAX_OP_W/8) is number of operations needed to finish the current VL
             // * (MAX_OP_W/COUNTER_OP_W) is number of increments of the counter for a full OP W.  all bits of VL below MAX_OP_W are cleared with this shifting order
-            last_cycle_next     =     count_next_inc >= (state_q.vl >> $clog2(MAX_OP_W/8)) << $clog2(MAX_OP_W/COUNTER_OP_W); 
-            alt_last_cycle_next =     alt_count_next_inc >= (state_q.vl >> $clog2(MAX_OP_W/8)) << $clog2(MAX_OP_W/COUNTER_OP_W);
+            last_cycle_next     =     count_next_inc >= (COUNTER_W'(state_q.vl) >> $clog2(MAX_OP_W/8)) << $clog2(MAX_OP_W/COUNTER_OP_W); 
+            alt_last_cycle_next =     alt_count_next_inc >= (COUNTER_W'(state_q.vl) >> $clog2(MAX_OP_W/8)) << $clog2(MAX_OP_W/COUNTER_OP_W);
 
             //clear last cycle in case processing final elements for elemwise operation
             if (state_q.op_flags[0].elemwise) begin //TODO: why doesnt this formula work above, only for elemwise)
-                last_cycle_next     =     count_next_inc >= (state_q.vl  >> ($clog2(MAX_OP_W/8) - $clog2(MAX_OP_W/COUNTER_OP_W))) -1; 
-                alt_last_cycle_next =     alt_count_next_inc >= (state_q.vl >> ($clog2(MAX_OP_W/8) - $clog2(MAX_OP_W/COUNTER_OP_W))) -1;
+                last_cycle_next     =     count_next_inc >= (COUNTER_W'(state_q.vl)  >> ($clog2(MAX_OP_W/8) - $clog2(MAX_OP_W/COUNTER_OP_W))) -1; 
+                alt_last_cycle_next =     alt_count_next_inc >= (COUNTER_W'(state_q.vl) >> ($clog2(MAX_OP_W/8) - $clog2(MAX_OP_W/COUNTER_OP_W))) -1;
 
             end
    
@@ -528,7 +528,7 @@ module vproc_pipeline import vproc_pkg::*; #(
         end
         `else
         //if count_next_inc.part.low == 0, then a single vreg has been filled.  The second condition triggers when the end of the vector has been reached in the middle of a vreg (extra condition needed for when vl == 0 (1 byte element) to not trigger twice)
-        if ((count_next_inc.part.low  == '0 | (count_next_inc > ((state_q.vl) >> $clog2(MAX_OP_W/8)) << $clog2(MAX_OP_W/COUNTER_OP_W))) & ((OP_ALT_COUNTER == '0) | ~state_q.count.part.sign) &
+        if ((count_next_inc.part.low  == '0 | (count_next_inc > ((COUNTER_W'(state_q.vl)) >> $clog2(MAX_OP_W/8)) << $clog2(MAX_OP_W/COUNTER_OP_W))) & ((OP_ALT_COUNTER == '0) | ~state_q.count.part.sign) &
             ((RES_ALWAYS_VREG | state_q.res_vreg) != '0) // at least one valid vreg
             ) begin
             //if (~state_q.op_flags[0].elemwise  | count_next_inc > (state_q.vl  >> ($clog2(MAX_OP_W/8) - $clog2(MAX_OP_W/COUNTER_OP_W)))) begin //TODO: why doesnt this formula work above, only for elemwise)
@@ -777,7 +777,7 @@ module vproc_pipeline import vproc_pkg::*; #(
     always_comb begin
         unpack_valid                = state_valid_q & ~state_stall & ~state_wait_alt_count_q;
 
-        unpack_ctrl.vreg_idx = state_q.count >> $clog2(MAX_OP_W/COUNTER_OP_W); //TODO: Explicity truncate this vector (dropping upper bits is itentional behavior, causes loop to beginning after a vreg has been written)
+        unpack_ctrl.vreg_idx = $bits(unpack_ctrl.vreg_idx)'(state_q.count >> $clog2(MAX_OP_W/COUNTER_OP_W)); //TODO: Explicity truncate this vector (dropping upper bits is itentional behavior, causes loop to beginning after a vreg has been written)
 
         unpack_ctrl.count_mul       = state_q.count.part.mul;
         unpack_ctrl.first_cycle     = state_q.first_cycle;
@@ -963,6 +963,7 @@ module vproc_pipeline import vproc_pkg::*; #(
     logic                                   unit_out_pend_clear;
     logic      [1:0]                        unit_out_pend_clear_cnt;
     logic                                   unit_out_instr_done;
+    logic                                   unit_out_no_stall;
     vproc_unit_mux #(
         .UNITS                     ( UNITS                    ),
         .XIF_ID_W                  ( XIF_ID_W                 ),
@@ -1000,6 +1001,7 @@ module vproc_pipeline import vproc_pkg::*; #(
         .pipe_out_pend_clear_o     ( unit_out_pend_clear      ),
         .pipe_out_pend_clear_cnt_o ( unit_out_pend_clear_cnt  ),
         .pipe_out_instr_done_o     ( unit_out_instr_done      ),
+        .pipe_out_no_stall_o       ( unit_out_no_stall        ),
         .pending_load_o            ( lsu_pending_load         ),
         .pending_store_o           ( lsu_pending_store        ),
         .vreg_pend_rd_i            ( vreg_pend_rd_i           ),
@@ -1068,6 +1070,7 @@ module vproc_pipeline import vproc_pkg::*; #(
         .pipe_in_pend_clr_i          ( unit_out_pend_clear     ),
         .pipe_in_pend_clr_cnt_i      ( unit_out_pend_clear_cnt ),
         .pipe_in_instr_done_i        ( unit_out_instr_done     ),
+        .pipe_in_no_stall_i          ( unit_out_no_stall       ),
         .vreg_wr_valid_o             ( vreg_wr_valid_o         ),
         .vreg_wr_ready_i             ( vreg_wr_ready_i         ),
         .vreg_wr_addr_o              ( vreg_wr_addr_o          ),

@@ -155,15 +155,17 @@ module vproc_top import vproc_pkg::*;
     logic        mat_wait;
     logic        mat_res_valid;
     logic [31:0] mat_res;
+    localparam int unsigned MDATA_BYTES = (VMEM_W >= 64) ? 8 : (VMEM_W / 8);
+    localparam int unsigned MDATA_W = MDATA_BYTES * 8;
     logic        mdata_req;
     logic [31:0] mdata_addr;
     logic        mdata_we;
-    logic [7:0]  mdata_be;
-    logic [63:0] mdata_wdata;
+    logic [MDATA_BYTES-1:0]  mdata_be;
+    logic [MDATA_W-1:0] mdata_wdata;
     logic        mdata_gnt;
     logic        mdata_rvalid;
     logic        mdata_err;
-    logic [63:0] mdata_rdata;
+    logic [MDATA_W-1:0] mdata_rdata;
 
     ibex_top #(
         .DmHaltAddr             ( 32'h00000000                       ),
@@ -311,7 +313,7 @@ module vproc_top import vproc_pkg::*;
     assign cpi_xreg         = mat_active ? mat_res : result_data;
 
     outer_product_matrix_unit #(
-        .MEM_WIDTH       ( 64               )
+        .MEM_WIDTH       ( MDATA_W          )
     ) mat_unit (
         .clk_i           ( clk_i            ),
         .rst_ni          ( rst_ni           ),
@@ -510,7 +512,6 @@ module vproc_top import vproc_pkg::*;
     logic                data_err;
     logic [VMEM_W  -1:0] data_rdata;
     localparam int unsigned VMEM_BYTES = VMEM_W / 8;
-    localparam int unsigned MDATA_BYTES = 8;
     localparam int unsigned MDATA_ALIGN_BITS = $clog2(MDATA_BYTES);
     logic [$clog2(VMEM_BYTES)-1:0] mdata_byte_off_req;
     logic [$clog2(VMEM_BYTES)-1:0] mdata_lane_off_req;
@@ -538,11 +539,11 @@ module vproc_top import vproc_pkg::*;
         if (mdata_req & ~mdata_hold) begin
             data_addr  = mdata_addr;
             data_we    = mdata_we;
-            data_be    = VMEM_W >= 64 ? ({{(VMEM_W > 64 ? VMEM_W-64 : 1){1'b0}}, mdata_be} << mdata_lane_off_req) : mdata_be[VMEM_W/8-1:0];
+            data_be    = VMEM_W > MDATA_W ? ({{(VMEM_W-MDATA_W){1'b0}}, mdata_be} << mdata_lane_off_req) : mdata_be[VMEM_W/8-1:0];
             data_wdata = '0;
-            if (VMEM_W >= 64) begin
-                for (int i = 0; i < VMEM_W / 64; i++) begin
-                    data_wdata[64*i +: 64] = mdata_wdata;
+            if (VMEM_W > MDATA_W) begin
+                for (int i = 0; i < VMEM_W / MDATA_W; i++) begin
+                    data_wdata[MDATA_W*i +: MDATA_W] = mdata_wdata;
                 end
             end else begin
                 data_wdata = mdata_wdata[VMEM_W-1:0];
@@ -599,10 +600,10 @@ module vproc_top import vproc_pkg::*;
     assign sdata_rdata  = data_rdata[(sdata_wait_addr[$clog2(VMEM_W)-1:0] & {3'b000, {($clog2(VMEM_W/8)-2){1'b1}}, 2'b00})*8 +: 32];
     assign vdata_rdata  = data_rdata;
     generate
-        if (VMEM_W >= 64) begin : gen_mdata_rdata_wide
-            assign mdata_rdata = data_rdata[mdata_lane_off_resp*8 +: 64];
+        if (VMEM_W > MDATA_W) begin : gen_mdata_rdata_wide
+            assign mdata_rdata = data_rdata[mdata_lane_off_resp*8 +: MDATA_W];
         end else begin : gen_mdata_rdata_narrow
-            assign mdata_rdata = {{(64-VMEM_W){1'b0}}, data_rdata};
+            assign mdata_rdata = data_rdata[MDATA_W-1:0];
         end
     endgenerate
     assign vdata_res_id = vdata_wait_id;

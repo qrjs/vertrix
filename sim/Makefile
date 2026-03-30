@@ -25,6 +25,7 @@ PROJ_DIR     ?= $(PROJ_DIR_TMP)
 # select the core to use as main processor (defaults to Ibex)
 CORE     ?= ibex
 CORE_DIR := $(SIM_DIR)/../$(CORE)/
+OLD_VICUNA ?= 1
 
 # memory initialization files
 PROG_PATHS ?= progs.txt
@@ -92,7 +93,9 @@ $(PROJ_DIR)/obj_dir/Vvproc_top.mk: verilator-version-check $(VPROC_CONFIG_PKG) $
 	if [ -n "$(ENABLE_PERF_COUNTERS)" ] && [ "$(ENABLE_PERF_COUNTERS)" != "0" ]; then \
 	    options="$$options -DVPROC_PERF_COUNTERS";                            \
 	fi;                                                                       \
-	options="$$options -DOLD_VICUNA";                                        \
+	if [ -n "$(OLD_VICUNA)" ] && [ "$(OLD_VICUNA)" != "0" ]; then           \
+	    options="$$options -DOLD_VICUNA";                                    \
+	fi;                                                                       \
 	core="";                                                                  \
 	inc="";                                                                   \
 	src="";                                                                   \

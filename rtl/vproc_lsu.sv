@@ -81,14 +81,22 @@ module vproc_lsu import vproc_pkg::*; #(
         logic [5:0]                  vreg_idx; //Needed for PACK
     } lsu_state_red;
 
+    typedef struct packed {
+        lsu_state_red                    state;
+        logic [VMEM_W              -1:0] data;
+        logic [$clog2(VMEM_W/8)    -1:0] offset;
+        logic [VMEM_W/8            -1:0] mask;
+    } lsu_result_t;
+
     ///////////////////////////////////////////////////////////////////////////
     // LSU BUFFERS
 
-    logic         state_req_ready,   lsu_queue_ready;
-    logic         state_req_stall;
+    logic         state_req_ready,   lsu_queue_ready, result_queue_ready;
+    logic         state_req_stall,   result_queue_stall;
     logic         state_req_valid_q, state_req_valid_d, state_rdata_valid_q, state_rdata_valid_d;
     CTRL_T        state_req_q,       state_req_d;
     lsu_state_red                                       state_rdata_q,       state_rdata_d;
+    lsu_result_t                                        state_rdata_in;
 
     assign pending_load_o  = state_req_valid_q & ~state_req_q.mode.lsu.store;
     assign pending_store_o = state_req_valid_q &  state_req_q.mode.lsu.store;
@@ -111,7 +119,7 @@ module vproc_lsu import vproc_pkg::*; #(
     logic [5:0] mem_exccode_q, mem_exccode_d;
 
     // load data, offset and mask buffers:
-    logic [       VMEM_W   -1:0] rdata_buf_q, rdata_buf_d;
+    logic [       VMEM_W   -1:0] rdata_buf_q;
     logic [$clog2(VMEM_W/8)-1:0] rdata_off_q, rdata_off_d;
     logic [       VMEM_W/8 -1:0] rmask_buf_q, rmask_buf_d;
 
@@ -154,57 +162,31 @@ module vproc_lsu import vproc_pkg::*; #(
             end
             assign state_req_ready = (vlsu_mem_valid_o & vlsu_mem_ready_i) | (~state_req_stall & ~vlsu_mem_valid_o);
         end
-
-        // Note: The stages receiving memory data and writing it to vector
-        // registers cannot stall, since there is no way to pause memory read
-        // data once the memory requests have been issued.  Therefore, any
-        // checks which might stall the pipeline (destination vector register
-        // available, instruction committed) must be done *before* generating
-        // the memory requests.
-        if (BUF_RDATA) begin
-            always_ff @(posedge clk_i or negedge async_rst_ni) begin : vproc_lsu_stage_rdata_valid
-                if (~async_rst_ni) begin
-                    state_rdata_valid_q <= 1'b0;
-                end
-                else if (~sync_rst_ni) begin
-                    state_rdata_valid_q <= 1'b0;
-                end
-                else begin
-                    state_rdata_valid_q <= state_rdata_valid_d;
-                end
-            end
-            always_ff @(posedge clk_i) begin : vproc_lsu_stage_rdata
-                if (state_rdata_valid_d) begin
-                    state_rdata_q <= state_rdata_d;
-                    rdata_buf_q   <= rdata_buf_d;
-                    rdata_off_q   <= rdata_off_d;
-                    rmask_buf_q   <= rmask_buf_d;
-                    mem_err_q     <= mem_err_d;
-                    mem_exccode_q <= mem_exccode_d;
-                end
-            end
-        end else begin
-            always_comb begin
-                state_rdata_valid_q = state_rdata_valid_d;
-                state_rdata_q       = state_rdata_d;
-                rdata_buf_q         = rdata_buf_d;
-                rdata_off_q         = rdata_off_d;
-                rmask_buf_q         = rmask_buf_d;
-            end
-            always_ff @(posedge clk_i) begin
-                // always need a flip-flop for the error flag and exception code
-                mem_err_q     <= mem_err_d;
-                mem_exccode_q <= mem_exccode_d;
-            end
-        end
     endgenerate
+
+    always_ff @(posedge clk_i or negedge async_rst_ni) begin
+        if (~async_rst_ni) begin
+            mem_err_q     <= 1'b0;
+            mem_exccode_q <= '0;
+        end
+        else if (~sync_rst_ni) begin
+            mem_err_q     <= 1'b0;
+            mem_exccode_q <= '0;
+        end
+        else if (state_rdata_valid_d) begin
+            mem_err_q     <= mem_err_d;
+            mem_exccode_q <= mem_exccode_d;
+        end
+    end
 
     // Stall vreg writes until pending reads of the destination register are
     // complete and while the instruction is speculative; for the LSU stalling
     // has to happen at the request stage, since later stalling is not possible
     // Also stall if incoming instruction is speculative OR a current instruction has not finished
+    assign result_queue_stall = ~pipe_out_ready_i;
     assign state_req_stall = (~state_req_q.mode.lsu.store & state_req_q.res_store & vreg_pend_rd_i[state_req_q.res_vaddr]) |
-                             ((instr_state_i[state_req_q.id] == INSTR_SPECULATIVE) | ~(state_req_q.id == deq_state.id)) | ~lsu_queue_ready;
+                             ((instr_state_i[state_req_q.id] == INSTR_SPECULATIVE) | ~(state_req_q.id == deq_state.id)) |
+                             ~lsu_queue_ready | result_queue_stall;
 
     ///////////////////////////////////////////////////////////////////////////
     // LSU READ/WRITE
@@ -334,7 +316,7 @@ module vproc_lsu import vproc_pkg::*; #(
         state_req_red.res_vaddr    = state_req_q.res_vaddr;
         state_req_red.res_store    = state_req_q.res_store;
         state_req_red.res_shift    = state_req_q.res_shift;
-        state_req_red.vreg_idx     = state_req_q.vreg_idx;
+        state_req_red.vreg_idx     = $bits(state_req_red.vreg_idx)'(state_req_q.vreg_idx);
         state_req_red.suppressed   = req_suppress;
         state_req_red.exc          = vlsu_mem_resp_exc_i & ~req_suppress;
         state_req_red.exccode      = vlsu_mem_resp_exccode_i;
@@ -366,7 +348,7 @@ module vproc_lsu import vproc_pkg::*; #(
                                     (vlsu_mem_result_id_i == deq_state.id) & !deq_state.suppressed;
 
 
-    assign deq_ready           = vlsu_mem_result_id_valid | deq_state.suppressed | mem_err_d;
+    assign deq_ready           = (vlsu_mem_result_id_valid | deq_state.suppressed | mem_err_d) & result_queue_ready;
     assign state_rdata_valid_d = deq_valid & deq_ready;
 
     // monitor the memory result for bus errors and the queue for exceptions
@@ -406,15 +388,38 @@ module vproc_lsu import vproc_pkg::*; #(
         .flags_all_o  (                                                                       )
     );
 
-    // load data state
+    // Queue memory results so later LSU instructions cannot force the output
+    // path to overtake other units while still draining in-order responses.
     always_comb begin
         state_rdata_d            = deq_state;
         state_rdata_d.exc        = mem_err_d;
         state_rdata_d.res_store &= ~state_rdata_d.mode.store; // inhibit vreg store for vector store
     end
 
-    // load data:
-    assign rdata_buf_d = vlsu_mem_result_rdata_i;
+    always_comb begin
+        state_rdata_in.state  = state_rdata_d;
+        state_rdata_in.data   = vlsu_mem_result_rdata_i;
+        state_rdata_in.offset = rdata_off_d;
+        state_rdata_in.mask   = rmask_buf_d;
+    end
+
+    vproc_queue #(
+        .WIDTH        ( $bits(lsu_result_t)                                      ),
+        .DEPTH        ( VLSU_QUEUE_SZ                                            ),
+        .FLOW         ( ~BUF_RDATA                                               )
+    ) result_queue (
+        .clk_i        ( clk_i                                                    ),
+        .async_rst_ni ( async_rst_ni                                             ),
+        .sync_rst_ni  ( sync_rst_ni                                              ),
+        .enq_ready_o  ( result_queue_ready                                       ),
+        .enq_valid_i  ( state_rdata_valid_d                                      ),
+        .enq_data_i   ( state_rdata_in                                           ),
+        .deq_ready_i  ( pipe_out_ready_i                                         ),
+        .deq_valid_o  ( state_rdata_valid_q                                      ),
+        .deq_data_o   ( {state_rdata_q, rdata_buf_q, rdata_off_q, rmask_buf_q}   ),
+        .flags_any_o  (                                                          ),
+        .flags_all_o  (                                                          )
+    );
 
     // load data conversion:
     logic [VMEM_W/8-1:0] rdata_unit_vl_mask, rdata_unit_vdmsk;
@@ -435,7 +440,7 @@ module vproc_lsu import vproc_pkg::*; #(
         pipe_out_ctrl_o.vl_part      = state_rdata_q.vl_part;
         pipe_out_ctrl_o.vl_part_0    = state_rdata_q.vl_part_0;
         pipe_out_ctrl_o.last_vl_part = state_rdata_q.last_vl_part & state_rdata_q.res_store; //only pass last_vl_part if storing to vreg
-        pipe_out_ctrl_o.vreg_idx     = state_rdata_q.vreg_idx;
+        pipe_out_ctrl_o.vreg_idx     = $bits(pipe_out_ctrl_o.vreg_idx)'(state_rdata_q.vreg_idx);
         pipe_out_ctrl_o.res_vaddr    = state_rdata_q.res_vaddr;
         pipe_out_ctrl_o.res_store    = state_rdata_q.res_store & ~state_rdata_q.exc;
         pipe_out_ctrl_o.res_shift    = state_rdata_q.res_shift;

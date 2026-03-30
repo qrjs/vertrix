@@ -112,7 +112,7 @@ module cv32e40x_div import vproc_pkg::*;
 
   // In case of negative op_b, invert op_b_i to count leading ones
   // and shift one less to preserve sign bit
-  assign op_b_alt = (~op_b_i << 1);
+  assign op_b_alt = {~op_b_i, 1'b0};
 
   always_comb
   begin

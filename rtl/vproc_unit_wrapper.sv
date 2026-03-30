@@ -152,7 +152,7 @@ module vproc_unit_wrapper import vproc_pkg::*; #(
                 pipe_out_res_valid_o[0]                 = pipe_out_valid_o;
                 pipe_out_res_data_o [0]                 = unit_out_res;
                 pipe_out_res_mask_o [0][MAX_OP_W/8-1:0] = unit_out_mask;
-                pipe_out_res_flags_o[0].vreg_idx        = unit_out_ctrl.vreg_idx;
+                pipe_out_res_flags_o[0].vreg_idx        = $bits(pipe_out_res_flags_o[0].vreg_idx)'(unit_out_ctrl.vreg_idx);
             end
             assign pipe_out_pend_clear_cnt_o = '0;
             assign pipe_out_instr_done_o     = unit_out_ctrl.last_cycle;
@@ -201,10 +201,10 @@ module vproc_unit_wrapper import vproc_pkg::*; #(
                 pipe_out_res_valid_o[0]                 = pipe_out_valid_o;
                 pipe_out_res_data_o [0]                 = unit_out_res_alu;
                 pipe_out_res_mask_o [0][MAX_OP_W/8-1:0] = unit_out_mask;
-                pipe_out_res_flags_o[0].vreg_idx        = unit_out_ctrl.vreg_idx;
+                pipe_out_res_flags_o[0].vreg_idx        = $bits(pipe_out_res_flags_o[0].vreg_idx)'(unit_out_ctrl.vreg_idx);
 
                 pipe_out_res_flags_o[1].mul_idx         = unit_out_ctrl.count_mul;
-                pipe_out_res_flags_o[1].vreg_idx        = unit_out_ctrl.vreg_idx;
+                pipe_out_res_flags_o[1].vreg_idx        = $bits(pipe_out_res_flags_o[1].vreg_idx)'(unit_out_ctrl.vreg_idx);
                 pipe_out_res_store_o[1]                 = unit_out_ctrl.res_store & unit_out_ctrl.mode.alu.cmp;
                 pipe_out_res_valid_o[1]                 = pipe_out_valid_o;
                 pipe_out_res_data_o [1][MAX_OP_W/8-1:0] = unit_out_res_cmp;
@@ -254,7 +254,7 @@ module vproc_unit_wrapper import vproc_pkg::*; #(
                 pipe_out_res_valid_o[0]                 = pipe_out_valid_o;
                 pipe_out_res_data_o [0]                 = unit_out_res;
                 pipe_out_res_mask_o [0][MAX_OP_W/8-1:0] = unit_out_mask;
-                pipe_out_res_flags_o[0].vreg_idx        = unit_out_ctrl.vreg_idx;
+                pipe_out_res_flags_o[0].vreg_idx        = $bits(pipe_out_res_flags_o[0].vreg_idx)'(unit_out_ctrl.vreg_idx);
             end
             assign pipe_out_pend_clear_o     = unit_out_ctrl.res_store;
             assign pipe_out_pend_clear_cnt_o = '0;
@@ -297,7 +297,7 @@ module vproc_unit_wrapper import vproc_pkg::*; #(
                 pipe_out_res_valid_o[0]                 = pipe_out_valid_o;
                 pipe_out_res_data_o [0]                 = unit_out_res;
                 pipe_out_res_mask_o [0][MAX_OP_W/8-1:0] = unit_out_mask;
-                pipe_out_res_flags_o[0].vreg_idx        = unit_out_ctrl.vreg_idx;
+                pipe_out_res_flags_o[0].vreg_idx        = $bits(pipe_out_res_flags_o[0].vreg_idx)'(unit_out_ctrl.vreg_idx);
             end
             assign pipe_out_pend_clear_o     = unit_out_ctrl.res_store;
             assign pipe_out_pend_clear_cnt_o = '0;
@@ -539,18 +539,21 @@ module vproc_unit_wrapper import vproc_pkg::*; #(
                 pipe_out_res_valid_o[0]                 = pipe_out_valid_o;
                 pipe_out_res_data_o [0]                 = unit_out_res;
                 pipe_out_res_mask_o [0][MAX_OP_W/8-1:0] = unit_out_mask;
-                pipe_out_res_flags_o[0].vreg_idx        = unit_out_ctrl.vreg_idx;
+                pipe_out_res_flags_o[0].vreg_idx        = $bits(pipe_out_res_flags_o[0].vreg_idx)'(unit_out_ctrl.vreg_idx);
             end
             assign pipe_out_pend_clear_o                = unit_out_ctrl.res_store;
             assign pipe_out_pend_clear_cnt_o            = '0;
             assign pipe_out_instr_done_o                = unit_out_ctrl.last_cycle;
         end 
         else if (UNIT == UNIT_FPU) begin
-            CTRL_T                 unit_out_ctrl;
-            logic [MAX_OP_W  -1:0] unit_out_res;
-            logic [MAX_OP_W/8-1:0] unit_out_mask;
-            logic                  unit_out_valid;
-            logic        unit_out_ready;
+            CTRL_T                 unit_out_ctrl, unit_out_ctrl_raw, unit_out_ctrl_hold_q;
+            logic [MAX_OP_W  -1:0] unit_out_res,  unit_out_res_raw,  unit_out_res_hold_q;
+            logic [MAX_OP_W/8-1:0] unit_out_mask, unit_out_mask_raw, unit_out_mask_hold_q;
+            logic                  unit_out_valid, unit_out_valid_raw;
+            logic                  unit_out_ready;
+            logic                  unit_out_hold_valid_q, unit_out_hold_valid_d;
+            logic                  unit_out_stage_ready;
+            logic                  unit_out_raw_matches_hold;
             
             vproc_fpu #(
                 .FPU_OP_W         ( MAX_OP_W                                    ),
@@ -567,12 +570,54 @@ module vproc_unit_wrapper import vproc_pkg::*; #(
                 .pipe_in_op2_i    ( pipe_in_op_data_i[0]                        ),
                 .pipe_in_op3_i    ( pipe_in_op_data_i[2]                        ),
                 .pipe_in_mask_i   ( pipe_in_op_data_i[OP_CNT-1][MAX_OP_W/8-1:0] ),
-                .pipe_out_valid_o ( unit_out_valid                              ),
-                .pipe_out_ready_i ( pipe_out_ready_i                            ),
-                .pipe_out_ctrl_o  ( unit_out_ctrl                               ),
-                .pipe_out_res_o   ( unit_out_res                                ),
-                .pipe_out_mask_o  ( unit_out_mask                               )
+                .pipe_out_valid_o ( unit_out_valid_raw                          ),
+                .pipe_out_ready_i ( unit_out_ready                              ),
+                .pipe_out_ctrl_o  ( unit_out_ctrl_raw                           ),
+                .pipe_out_res_o   ( unit_out_res_raw                            ),
+                .pipe_out_mask_o  ( unit_out_mask_raw                           )
             );
+
+            always_ff @(posedge clk_i or negedge async_rst_ni) begin
+                if (~async_rst_ni) begin
+                    unit_out_hold_valid_q <= 1'b0;
+                end
+                else if (~sync_rst_ni) begin
+                    unit_out_hold_valid_q <= 1'b0;
+                end
+                else begin
+                    unit_out_hold_valid_q <= unit_out_hold_valid_d;
+                end
+            end
+
+            assign unit_out_raw_matches_hold = (unit_out_ctrl_raw.id == unit_out_ctrl_hold_q.id) &
+                                               (unit_out_ctrl_raw.res_vaddr == unit_out_ctrl_hold_q.res_vaddr) &
+                                               (unit_out_ctrl_raw.vreg_idx == unit_out_ctrl_hold_q.vreg_idx);
+
+            always_comb begin
+                unit_out_hold_valid_d = unit_out_hold_valid_q;
+                if (~unit_out_hold_valid_q & unit_out_valid_raw & ~unit_out_stage_ready) begin
+                    unit_out_hold_valid_d = 1'b1;
+                end
+                else if (unit_out_hold_valid_q & unit_out_stage_ready) begin
+                    unit_out_hold_valid_d = unit_out_valid_raw & ~unit_out_raw_matches_hold;
+                end
+            end
+
+            always_ff @(posedge clk_i) begin
+                if (unit_out_valid_raw & (
+                    (~unit_out_stage_ready & ~unit_out_hold_valid_q) |
+                    (unit_out_hold_valid_q & unit_out_stage_ready & ~unit_out_raw_matches_hold)
+                )) begin
+                    unit_out_ctrl_hold_q <= unit_out_ctrl_raw;
+                    unit_out_res_hold_q  <= unit_out_res_raw;
+                    unit_out_mask_hold_q <= unit_out_mask_raw;
+                end
+            end
+
+            assign unit_out_valid = unit_out_hold_valid_q ? 1'b1 : unit_out_valid_raw;
+            assign unit_out_ctrl  = unit_out_hold_valid_q ? unit_out_ctrl_hold_q : unit_out_ctrl_raw;
+            assign unit_out_res   = unit_out_hold_valid_q ? unit_out_res_hold_q  : unit_out_res_raw;
+            assign unit_out_mask  = unit_out_hold_valid_q ? unit_out_mask_hold_q : unit_out_mask_raw;
 
            // Unit control for reduction operations.  Ignored for normal FPU operations
            // output buffer signals
@@ -695,7 +740,8 @@ module vproc_unit_wrapper import vproc_pkg::*; #(
 
 
             assign pipe_out_valid_o = (unit_out_valid) | flushing_q;
-            assign unit_out_ready   = pipe_out_ready_i & ~flushing_q;
+            assign unit_out_stage_ready = pipe_out_ready_i & ~flushing_q;
+            assign unit_out_ready       = unit_out_stage_ready | ~unit_out_hold_valid_q;
             //unit out stall signal missing.  Needed for ELEM operation?
             //assign pipe_out_valid_o = (unit_out_valid & ~unit_out_stall) | flushing_q;
             //assign unit_out_ready   = pipe_out_ready_i & ~flushing_q & ~unit_out_stall;
@@ -743,7 +789,7 @@ module vproc_unit_wrapper import vproc_pkg::*; #(
                    pipe_out_instr_done_o     = (~flushing_q & unit_out_ctrl.last_cycle & ~unit_out_ctrl.requires_flush ) | flushing_last_cycle;
                    pipe_out_pend_clear_o     = (~flushing_q & unit_out_ctrl.last_cycle & ~unit_out_ctrl.requires_flush ) | flushing_last_cycle;
                    pipe_out_pend_clear_cnt_o = flushing_emul_q; // TODO reductions always have destination EMUL == 1
-                   pipe_out_res_flags_o[0].vreg_idx        = unit_out_ctrl.vreg_idx;
+                   pipe_out_res_flags_o[0].vreg_idx        = $bits(pipe_out_res_flags_o[0].vreg_idx)'(unit_out_ctrl.vreg_idx);
                    
 
                 end else begin
@@ -757,19 +803,20 @@ module vproc_unit_wrapper import vproc_pkg::*; #(
                      pipe_out_res_data_o  = '0;
                      pipe_out_res_mask_o  = '0;
                      pipe_out_res_flags_o[0].shift           = 1'b1;
-                     pipe_out_res_store_o[0]                 = unit_out_ctrl.res_store;
+                     pipe_out_res_store_o[0]                 = unit_out_valid & unit_out_ctrl.res_store;
                      pipe_out_res_valid_o[0]                 = unit_out_valid;
                      pipe_out_res_data_o [0]                 = unit_out_res;
                      pipe_out_res_mask_o [0][MAX_OP_W/8-1:0] = unit_out_mask;
-                     pipe_out_pend_clear_o     = unit_out_ctrl.res_store;
+                     pipe_out_pend_clear_o     = unit_out_valid & unit_out_ctrl.res_store;
                      pipe_out_pend_clear_cnt_o = '0;
-                     pipe_out_instr_done_o     = unit_out_ctrl.last_cycle;
+                     pipe_out_instr_done_o     = unit_out_valid & unit_out_ctrl.last_cycle;
                      pipe_out_res_flags_o[0].elemwise = 1'b0;
-                     pipe_out_res_flags_o[0].vreg_idx        = unit_out_ctrl.vreg_idx;
+                     pipe_out_res_flags_o[0].vreg_idx        = $bits(pipe_out_res_flags_o[0].vreg_idx)'(unit_out_ctrl.vreg_idx);
                      
 
                 end
             end
+
         end
     endgenerate
 endmodule

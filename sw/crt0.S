@@ -80,12 +80,8 @@ exc_wrapper:
     sw a6, 16(sp)
     sw a7, 12(sp)
 
-    # save mepc, mie and mstatus:
-    csrr t0, mie
-    csrr t1, mstatus
+    # save mepc so handlers can inspect or override the return PC.
     csrr a1, mepc
-    sw t0, 0(sp)
-    sw t1, 4(sp)
     sw a1, 8(sp)
 
     # call exception handler (a0 = mcause, a1 = mepc, a2 = mtval, a3 = fp)
@@ -94,13 +90,12 @@ exc_wrapper:
     lw a3, 72(sp)
     call exception_handler
 
-    # restore mepc, mie and mstatus (restoring mstatus disables interrupts):
-    lw t0, 0(sp)
-    lw t1, 4(sp)
-    lw t2, 8(sp)
-    csrw mie, t0
-    csrw mstatus, t1
-    csrw mepc, t2
+    .global exc_wrapper_resume
+exc_wrapper_resume:
+    # exception_handler may update a1 with the return PC to skip or replay an
+    # instruction. The wrapper writes mepc directly so handlers do not need to
+    # touch CSRs on cores with a restricted CSR implementation.
+    csrw mepc, a1
 
     # restore registers:
     lw a7, 12(sp)

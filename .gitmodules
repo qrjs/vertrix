@@ -5,3 +5,6 @@
 [submodule "cv32e40x"]
 	path = cv32e40x
 	url = https://github.com/openhwgroup/cv32e40x.git
+[submodule "hide/vicuna2_core"]
+	path = hide/vicuna2_core
+	url = https://github.com/vproc/vicuna2_core.git

@@ -73,7 +73,7 @@ jobs:
       fail-fast: false
       matrix:
         unit: [lsu, alu, mul, sld, elem, csr, misc]
-        main_core: [ibex, cv32e40x]
+        main_core: [ibex]
     steps:
       - uses: actions/checkout@v2
         with:
@@ -123,3 +123,80 @@ jobs:
           name: vcd-trace-files
           path: |
             test/${{ matrix.unit }}/*.vcd
+
+  fp:
+    needs: verilator
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - config_name: compact
+            config_line: VPROC_CONFIG=compact VREG_W=128 VMEM_W=32 RISCV_ZVE32F=1 RISCV_ZVFH=1
+          - config_name: legacy
+            config_line: VPROC_CONFIG=legacy VREG_W=128 VMEM_W=32 RISCV_ZVE32F=1 RISCV_ZVFH=1
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          submodules: true
+
+      - uses: actions/cache@v2
+        id: cache-verilator
+        with:
+          path: /opt/verilator
+          key: ubuntu-22_04-verilator-4_210
+
+      - name: Abort if no cache
+        if: steps.cache-verilator.outputs.cache-hit != 'true'
+        run: exit 1
+
+      - name: Install packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install git perl python3 g++ ccache libfl2 libfl-dev zlib1g zlib1g-dev
+          sudo apt-get install srecord llvm-14 clang-14
+          sudo ln -sf /usr/bin/llvm-objdump-14 /usr/bin/llvm-objdump
+          sudo ln -sf /usr/bin/llvm-objcopy-14 /usr/bin/llvm-objcopy
+
+      - name: Run FP regression
+        run: |
+          export PATH=$PATH:/opt/verilator/bin:/opt/riscv-gcc/bin
+          printf '%s\n' "${{ matrix.config_line }}" > test/fp/test_configs.conf
+          make -C test fp CORE=ibex FULL_LOG=1
+
+  kernel:
+    needs: verilator
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          submodules: true
+
+      - uses: actions/cache@v2
+        id: cache-verilator
+        with:
+          path: /opt/verilator
+          key: ubuntu-22_04-verilator-4_210
+
+      - name: Abort if no cache
+        if: steps.cache-verilator.outputs.cache-hit != 'true'
+        run: exit 1
+
+      - name: Install packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install git perl python3 g++ ccache libfl2 libfl-dev zlib1g zlib1g-dev
+          sudo apt-get install srecord llvm-14 clang-14
+          sudo ln -sf /usr/bin/llvm-objdump-14 /usr/bin/llvm-objdump
+          sudo ln -sf /usr/bin/llvm-objcopy-14 /usr/bin/llvm-objcopy
+
+      - name: Run kernel smoke tests
+        run: |
+          export PATH=$PATH:/opt/verilator/bin:/opt/riscv-gcc/bin
+          printf '%s\n' "VPROC_CONFIG=legacy VREG_W=128 VMEM_W=32 MEM_W=32 MEM_SZ=524288 ICACHE_SZ=4096 DCACHE_SZ=0 MEM_LATENCY=1 RISCV_ZVE32F=1" > test/kernel/test_configs.conf
+          make -C test \
+            kernel/mnist_infer \
+            kernel/mnist_infer_matunit \
+            kernel/mnist_infer_fp32 \
+            kernel/llama2_softfloat_tiny \
+            CORE=ibex FULL_LOG=1

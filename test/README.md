@@ -27,9 +27,9 @@ older versions, you need to compile Verilator from source.  See the
 [Verilator website](https://verilator.org/guide/latest/install.html)
 for instructions on building Verilator.
 
-The default compiler used for the tests is GCC. This can be changed by
-setting the environment variable `COMPILER`. GCC and LLVM + Clang (set `COMPILER`
-to `llvm` to use it) are supported.
+The default compiler used for the tests is LLVM + Clang. This can be changed by
+setting the environment variable `COMPILER`. LLVM + Clang (the default, or set
+`COMPILER` to `llvm`) and GCC (set `COMPILER` to `gcc`) are supported.
 
 By default tracing is disabled in Verilator.  Use the environment variable
 `TRACE_VCD` to specify a `*.vcd` file path if you wish to generate a VCD trace

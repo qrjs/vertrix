@@ -43,3 +43,12 @@ main:
     vse32.v v4, (a0)
 
     ret
+
+    // End the program directly from the trap handler. The destination buffer
+    // already contains the sentinel values, so the memory diff still verifies
+    // that the illegal instruction did not corrupt architectural state.
+    .global exception_handler
+exception_handler:
+    sw      zero, 0(zero)
+1:
+    j       1b

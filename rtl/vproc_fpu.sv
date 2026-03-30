@@ -9,13 +9,13 @@ module vproc_fpu #(
         `ifdef RISCV_ZVFH
         parameter fpnew_pkg::fpu_features_t       FPU_FEATURES       = vproc_pkg::RV32ZVFH,           //TODO:Need to pass these all the way to the top level for easy adjustments
         `else
-        parameter fpnew_pkg::fpu_features_t       FPU_FEATURES       = fpnew_pkg::RV32F,           //TODO:Need to pass these all the way to the top level for easy adjustments
+        parameter fpnew_pkg::fpu_features_t       FPU_FEATURES       = vproc_pkg::RV32ZVE32F,        // FP32 vector mode without FP16 support
         `endif
         
         `ifdef RISCV_ZVFH
         parameter fpnew_pkg::fpu_implementation_t FPU_IMPLEMENTATION = vproc_pkg::ZVFH_NOREGS
         `else
-        parameter fpnew_pkg::fpu_implementation_t FPU_IMPLEMENTATION = fpnew_pkg::DEFAULT_NOREGS
+        parameter fpnew_pkg::fpu_implementation_t FPU_IMPLEMENTATION = vproc_pkg::ZVE32F_NOREGS
         `endif
             )(
         input  logic                  clk_i,
@@ -100,21 +100,44 @@ module vproc_fpu #(
                            & (unit_ctrl_q.mode.fpu.op == ADD)
                            & (src_fmt != dst_fmt);
 
+    // Widening mixed-width add/sub between narrow vs1 and wide vs2 uses
+    // fpnew FMADD with +/-1.0 * vs1 + vs2, because fpnew ADD only supports
+    // mixed-format ordering as narrow + wide.
+    logic widen_mixed_addsub;
+    assign widen_mixed_addsub = ~unit_ctrl_q.mode.fpu.op_reduction
+                              & (unit_ctrl_q.mode.fpu.op == ADD)
+                              & (src_fmt != dst_fmt)
+                              & unit_ctrl_q.mode.fpu.src_1_narrow
+                              & ~unit_ctrl_q.mode.fpu.src_2_narrow;
+
+    // fpnew ADDS mixed-format widening subtraction works, but the matching
+    // addition path drops the addend. Route vfwadd through the subtraction
+    // datapath by pre-negating the addend and asserting op_mod.
+    logic widen_narrow_add_via_sub;
+    assign widen_narrow_add_via_sub = ~unit_ctrl_q.mode.fpu.op_reduction
+                                    & (unit_ctrl_q.mode.fpu.op == ADDS)
+                                    & ~unit_ctrl_q.mode.fpu.op_mod
+                                    & (src_fmt != dst_fmt)
+                                    & unit_ctrl_q.mode.fpu.src_1_narrow
+                                    & unit_ctrl_q.mode.fpu.src_2_narrow;
+
+    logic use_src_fmt_addend;
+    assign use_src_fmt_addend = (unit_ctrl_q.mode.fpu.op == ADDS) & ~rsqrt_div_valid;
+
     // Per-lane active mask derived from input-side VL (fixes vl>1 deadlock)
     logic [FPU_OP_W/8-1:0]  fpu_in_vl_mask;
     logic [FPU_OP_W/32-1:0] fpu_active_lanes;
-    logic                    all_active_lanes_valid;
+    logic                   all_active_lanes_valid;
 
     ///////////////////////////////////////////////////////////////////////////
     //Input Connections - Connect to buffers
     ///////////////////////////////////////////////////////////////////////////
     always_comb begin
-            unit_ctrl_d     = pipe_in_ctrl_i;
-            data_valid_i_d  = pipe_in_valid_i;
-            pipe_in_op1_i_d = pipe_in_op1_i;
-            pipe_in_op2_i_d = pipe_in_op2_i;
-            pipe_in_op3_i_d = pipe_in_op3_i;
-
+        unit_ctrl_d     = pipe_in_ctrl_i;
+        data_valid_i_d  = pipe_in_valid_i;
+        pipe_in_op1_i_d = pipe_in_op1_i;
+        pipe_in_op2_i_d = pipe_in_op2_i;
+        pipe_in_op3_i_d = pipe_in_op3_i;
     end
 
 
@@ -177,6 +200,13 @@ module vproc_fpu #(
                 int_fmt = INT32;
                 vectorial_op = 0;
             end
+            // Widening from SEW16 with wide vs2 and narrow vs1
+            {VSEW_32, 1'b1, 1'b0} : begin
+                src_fmt = FP16;
+                dst_fmt = FP32;
+                int_fmt = INT32;
+                vectorial_op = 0;
+            end
 
             default : begin
                 src_fmt = FP32;
@@ -192,15 +222,29 @@ module vproc_fpu #(
     //Input buffers
     ///////////////////////////////////////////////////////////////////////////
 
-    always_ff @(posedge clk_i) begin
-
-        pipe_in_op1_i_q <= pipe_in_op1_i_d;
-        pipe_in_op2_i_q <= pipe_in_op2_i_d;
-        pipe_in_op3_i_q <= pipe_in_op3_i_d;
-        unit_ctrl_q <= unit_ctrl_d;
-        data_valid_i_q <= data_valid_i_d;
-        reduction_buffer_q <= reduction_buffer_d;
-            
+    always_ff @(posedge clk_i or negedge async_rst_ni) begin
+        if (~async_rst_ni) begin
+            pipe_in_op1_i_q   <= '0;
+            pipe_in_op2_i_q   <= '0;
+            pipe_in_op3_i_q   <= '0;
+            unit_ctrl_q       <= '0;
+            data_valid_i_q    <= 1'b0;
+            reduction_buffer_q <= '0;
+        end else if (~sync_rst_ni) begin
+            pipe_in_op1_i_q   <= '0;
+            pipe_in_op2_i_q   <= '0;
+            pipe_in_op3_i_q   <= '0;
+            unit_ctrl_q       <= '0;
+            data_valid_i_q    <= 1'b0;
+            reduction_buffer_q <= '0;
+        end else begin
+            pipe_in_op1_i_q   <= pipe_in_op1_i_d;
+            pipe_in_op2_i_q   <= pipe_in_op2_i_d;
+            pipe_in_op3_i_q   <= pipe_in_op3_i_d;
+            unit_ctrl_q       <= unit_ctrl_d;
+            data_valid_i_q    <= data_valid_i_d;
+            reduction_buffer_q <= reduction_buffer_d;
+        end
     end
 
     ///////////////////////////////////////////////////////////////////////////
@@ -273,7 +317,7 @@ module vproc_fpu #(
             RSQRT_DIV_WAIT:  fpu_out_ready = all_rsqrt_lanes_valid & pipe_out_ready_i;
             RSQRT_SQRT_WAIT,
             RSQRT_DIV_PEND:  fpu_out_ready = all_rsqrt_lanes_valid;
-            default:         fpu_out_ready = all_active_lanes_valid;
+            default:         fpu_out_ready = all_active_lanes_valid & pipe_out_ready_i;
         endcase
     end
 
@@ -353,43 +397,48 @@ module vproc_fpu #(
             if (widen_reduction) begin
                 // Widening reduction: use FMADD(1.0_FP16, vs2_FP16, acc_FP32)
                 operand_0_fpu = {(FPU_OP_W/32){32'h00003C00}};  // FP16 1.0 per lane (NaN-boxed later)
-                operand_1_fpu = {'0, pipe_in_op2_i_q[31:0]};     // vs2 element (FP16)
+                operand_1_fpu = FPU_OP_W'(pipe_in_op2_i_q[31:0]); // vs2 element (FP16)
                 operand_2_fpu = unit_ctrl_q.first_cycle ?
-                    {'0, pipe_in_op1_i_q[31:0]} :                 // vs1 accumulator (FP32)
-                    {'0, reduction_buffer_q[31:0]};               // reduction accumulator (FP32)
+                    FPU_OP_W'(pipe_in_op1_i_q[31:0]) :            // vs1 accumulator (FP32)
+                    FPU_OP_W'(reduction_buffer_q[31:0]);          // reduction accumulator (FP32)
             end else if(unit_ctrl_q.first_cycle == 1'b1) begin
                 operand_0_fpu = '0;//This operand is unused by these operations;
-                operand_1_fpu = {'0, pipe_in_op1_i_q[31:0]};//First cycle of reduction operation uses vs1[0]
-                operand_2_fpu = {'0, pipe_in_op2_i_q[31:0]};
+                operand_1_fpu = FPU_OP_W'(pipe_in_op1_i_q[31:0]);//First cycle of reduction operation uses vs1[0]
+                operand_2_fpu = FPU_OP_W'(pipe_in_op2_i_q[31:0]);
 
             end else begin
                 operand_0_fpu = '0;//This operand is unused by these operations;
-                operand_1_fpu = {'0, reduction_buffer_q[31:0]};//all other cycles use previous result
-                operand_2_fpu = {'0, pipe_in_op2_i_q[31:0]};
+                operand_1_fpu = FPU_OP_W'(reduction_buffer_q[31:0]);//all other cycles use previous result
+                operand_2_fpu = FPU_OP_W'(pipe_in_op2_i_q[31:0]);
 
             end           
 
         end else if (unit_ctrl_q.mode.fpu.op_reduction == 1'b1 & unit_ctrl_q.mode.fpu.op == MINMAX) begin
 
             if(unit_ctrl_q.first_cycle == 1'b1) begin
-                operand_0_fpu = {'0, pipe_in_op2_i_q[31:0]};
-                operand_1_fpu = {'0, pipe_in_op1_i_q[31:0]};//First cycle of reduction operation uses vs1[0]  //TODO: MAKE THESE GENERIC
+                operand_0_fpu = FPU_OP_W'(pipe_in_op2_i_q[31:0]);
+                operand_1_fpu = FPU_OP_W'(pipe_in_op1_i_q[31:0]);//First cycle of reduction operation uses vs1[0]  //TODO: MAKE THESE GENERIC
                 operand_2_fpu = '0;//This operand is unused by these operations
             end else begin
-                operand_0_fpu = {'0, pipe_in_op2_i_q[31:0]};
-                operand_1_fpu = {'0, reduction_buffer_q[31:0]};//all other cycles use previous result
+                operand_0_fpu = FPU_OP_W'(pipe_in_op2_i_q[31:0]);
+                operand_1_fpu = FPU_OP_W'(reduction_buffer_q[31:0]);//all other cycles use previous result
                 operand_2_fpu = '0;//This operand is unused by these operations;
             end     
 
-        end else if (unit_ctrl_q.mode.fpu.op == ADD) begin
+        end else if (unit_ctrl_q.mode.fpu.op == ADD || unit_ctrl_q.mode.fpu.op == ADDS) begin
 
-            if (unit_ctrl_q.mode.fpu.op_rev == 1'b1) begin
+            if (widen_mixed_addsub) begin
+                operand_0_fpu = {(FPU_OP_W/32){unit_ctrl_q.mode.fpu.op_mod ? 32'h0000BC00 : 32'h00003C00}};
+                operand_1_fpu = pipe_in_op1_i_q;
+                operand_2_fpu = pipe_in_op2_i_q;
+
+            end else if (unit_ctrl_q.mode.fpu.op_rev == 1'b1) begin
                 //Reverse input operands
-                operand_0_fpu = 32'b0;//This operand is unused by these operations;
+                operand_0_fpu = '0;//This operand is unused by these operations;
                 operand_1_fpu = pipe_in_op1_i_q;
                 operand_2_fpu = pipe_in_op2_i_q;
             end else begin
-                operand_0_fpu = 32'b0;//This operand is unused by these operations;
+                operand_0_fpu = '0;//This operand is unused by these operations;
                 operand_1_fpu = pipe_in_op2_i_q;
                 operand_2_fpu = pipe_in_op1_i_q;
             end
@@ -407,18 +456,18 @@ module vproc_fpu #(
                 //Reverse input operands
                 operand_0_fpu = pipe_in_op1_i_q;
                 operand_1_fpu = pipe_in_op2_i_q;
-                operand_2_fpu = 32'b0;//This operand is unused by these operations
+                operand_2_fpu = '0;//This operand is unused by these operations
             end else begin
                 operand_0_fpu = pipe_in_op2_i_q;
                 operand_1_fpu = pipe_in_op1_i_q;
-                operand_2_fpu = 32'b0;//This operand is unused by these operations
+                operand_2_fpu = '0;//This operand is unused by these operations
             end
 
         end else if (unit_ctrl_q.mode.fpu.op == MINMAX | unit_ctrl_q.mode.fpu.op == MUL | unit_ctrl_q.mode.fpu.op == SGNJ ) begin
             
             operand_0_fpu = pipe_in_op2_i_q;
             operand_1_fpu = pipe_in_op1_i_q;
-            operand_2_fpu = 32'b0;//This operand is unused by these operations
+            operand_2_fpu = '0;//This operand is unused by these operations
 
         end else if (unit_ctrl_q.mode.fpu.op == FMADD | unit_ctrl_q.mode.fpu.op == FNMSUB) begin
 
@@ -437,14 +486,14 @@ module vproc_fpu #(
         end else if (unit_ctrl_q.mode.fpu.op == SQRT) begin
 
             operand_0_fpu = pipe_in_op2_i_q;
-            operand_1_fpu = 32'b0;//This operand is unused by these operations
-            operand_2_fpu = 32'b0;//This operand is unused by these operations
+            operand_1_fpu = '0;//This operand is unused by these operations
+            operand_2_fpu = '0;//This operand is unused by these operations
 
         end else if (unit_ctrl_q.mode.fpu.op == CLASSIFY | unit_ctrl_q.mode.fpu.op == F2I | unit_ctrl_q.mode.fpu.op == I2F) begin
 
             operand_0_fpu = pipe_in_op2_i_q;
-            operand_1_fpu = 32'b0;//This operand is unused by these operations
-            operand_2_fpu = 32'b0;//This operand is unused by these operations
+            operand_1_fpu = '0;//This operand is unused by these operations
+            operand_2_fpu = '0;//This operand is unused by these operations
 
         end
 
@@ -466,6 +515,15 @@ module vproc_fpu #(
             for (int g = 0; g < FPU_OP_W / 32; g++) begin
                 operand_0_fpu[32*g+16 +: 16] = 16'hFFFF;
                 operand_1_fpu[32*g+16 +: 16] = 16'hFFFF;
+                if (use_src_fmt_addend) begin
+                    operand_2_fpu[32*g+16 +: 16] = 16'hFFFF;
+                end
+            end
+        end
+
+        if (widen_narrow_add_via_sub) begin
+            for (int g = 0; g < FPU_OP_W / 32; g++) begin
+                operand_2_fpu[32*g+15] = ~operand_2_fpu[32*g+15];
             end
         end
 
@@ -493,14 +551,17 @@ module vproc_fpu #(
                     .operands_i    ({operand_2_fpu[32*g +: 32], operand_1_fpu[32*g +: 32], operand_0_fpu[32*g +: 32]}),  
                     .rnd_mode_i    (rsqrt_div_valid ? rsqrt_tag_q.ctrl.mode.fpu.rnd_mode : unit_ctrl_q.mode.fpu.rnd_mode),
                     .op_i          (rsqrt_div_valid ? fpnew_pkg::DIV :
-                                    widen_reduction ? fpnew_pkg::FMADD : unit_ctrl_q.mode.fpu.op),
-                    .op_mod_i      ((rsqrt_div_valid | unit_ctrl_q.mode.fpu.op == DIV | unit_ctrl_q.mode.fpu.op == SQRT) ? 1'b0 : unit_ctrl_q.mode.fpu.op_mod),
+                                    (widen_reduction | widen_mixed_addsub) ? fpnew_pkg::FMADD : unit_ctrl_q.mode.fpu.op),
+                    .op_mod_i      (((rsqrt_div_valid | widen_mixed_addsub) |
+                                    (unit_ctrl_q.mode.fpu.op == DIV) |
+                                    (unit_ctrl_q.mode.fpu.op == SQRT)) ? 1'b0 :
+                                    (widen_narrow_add_via_sub ? 1'b1 : unit_ctrl_q.mode.fpu.op_mod)),
                     .src_fmt_i     (rsqrt_div_valid ? rsqrt_src_fmt_q : src_fmt),
                     .dst_fmt_i     (rsqrt_div_valid ? rsqrt_src_fmt_q : dst_fmt),
                     .int_fmt_i     (int_fmt),
                     .vectorial_op_i(rsqrt_div_valid ? rsqrt_vectorial_q : vectorial_op),
                     .tag_i         (rsqrt_div_valid ? rsqrt_tag_q : unit_in_fpu_tag),
-                    .simd_mask_i   (2'b11),
+                    .simd_mask_i   ('1),
                     .in_valid_i    (rsqrt_div_valid ? rsqrt_active_lanes_q[g] :
                                     (rsqrt_active ? 1'b0 : (data_valid_i_q & fpu_active_lanes[g]))),
                     .in_ready_o    (pipe_in_ready_fpu[g]),

@@ -156,9 +156,11 @@ module vproc_elem #(
     assign counter_d = (pipe_in_ctrl_i.first_cycle ? 32'b0 : counter_q) + {31'b0, counter_inc};
 
     logic        v0msk;
+    logic        reduction_active;
     logic [31:0] reduct_val;
-    assign v0msk      = v0msk_q | ~pipe_in_ctrl_i.mode.elem.masked;
-    assign reduct_val = pipe_in_ctrl_i.first_cycle ? elem2 : result_q;
+    assign v0msk            = v0msk_q | ~pipe_in_ctrl_i.mode.elem.masked;
+    assign reduction_active = ~pipe_in_ctrl_i.vl_part_0 & v0msk;
+    assign reduct_val       = pipe_in_ctrl_i.first_cycle ? elem2 : result_q;
     always_comb begin
         counter_inc    = DONT_CARE_ZERO ? '0 : 'x;
         result_d       = DONT_CARE_ZERO ? '0 : 'x;
@@ -234,30 +236,29 @@ module vproc_elem #(
             end
 
             // reduction operations
-            // TODO support masked reductions (currently only unmasked)
             ELEM_VREDSUM: begin
-                result_d       = ~pipe_in_ctrl_i.vl_part_0 ? (elem1 + reduct_val) : reduct_val;
+                result_d       = reduction_active ? (elem1 + reduct_val) : reduct_val;
                 result_mask_d  = ~pipe_in_ctrl_i.vl_0;
                 result_valid_d = pipe_in_ctrl_i.last_cycle;
             end
             ELEM_VREDAND: begin
-                result_d       = ~pipe_in_ctrl_i.vl_part_0 ? (elem1 & reduct_val) : reduct_val;
+                result_d       = reduction_active ? (elem1 & reduct_val) : reduct_val;
                 result_mask_d  = ~pipe_in_ctrl_i.vl_0;
                 result_valid_d = pipe_in_ctrl_i.last_cycle;
             end
             ELEM_VREDOR: begin
-                result_d       = ~pipe_in_ctrl_i.vl_part_0 ? (elem1 | reduct_val) : reduct_val;
+                result_d       = reduction_active ? (elem1 | reduct_val) : reduct_val;
                 result_mask_d  = ~pipe_in_ctrl_i.vl_0;
                 result_valid_d = pipe_in_ctrl_i.last_cycle;
             end
             ELEM_VREDXOR: begin
-                result_d       = ~pipe_in_ctrl_i.vl_part_0 ? (elem1 ^ reduct_val) : reduct_val;
+                result_d       = reduction_active ? (elem1 ^ reduct_val) : reduct_val;
                 result_mask_d  = ~pipe_in_ctrl_i.vl_0;
                 result_valid_d = pipe_in_ctrl_i.last_cycle;
             end
             ELEM_VREDMINU: begin
                 result_d = reduct_val;
-                if (~pipe_in_ctrl_i.vl_part_0) begin
+                if (reduction_active) begin
                     unique case (pipe_in_ctrl_i.eew)
                         VSEW_8:  result_d[7 :0] = (elem1[7 :0] < reduct_val[7 :0]) ? elem1[7 :0] : reduct_val[7 :0];
                         VSEW_16: result_d[15:0] = (elem1[15:0] < reduct_val[15:0]) ? elem1[15:0] : reduct_val[15:0];
@@ -270,7 +271,7 @@ module vproc_elem #(
             end
             ELEM_VREDMIN: begin
                 result_d = reduct_val;
-                if (~pipe_in_ctrl_i.vl_part_0) begin
+                if (reduction_active) begin
                     unique case (pipe_in_ctrl_i.eew)
                         VSEW_8:  result_d[7 :0] = ($signed(elem1[7 :0]) < $signed(reduct_val[7 :0])) ? elem1[7 :0] : reduct_val[7 :0];
                         VSEW_16: result_d[15:0] = ($signed(elem1[15:0]) < $signed(reduct_val[15:0])) ? elem1[15:0] : reduct_val[15:0];
@@ -283,7 +284,7 @@ module vproc_elem #(
             end
             ELEM_VREDMAXU: begin
                 result_d = reduct_val;
-                if (~pipe_in_ctrl_i.vl_part_0) begin
+                if (reduction_active) begin
                     unique case (pipe_in_ctrl_i.eew)
                         VSEW_8:  result_d[7 :0] = (elem1[7 :0] > reduct_val[7 :0]) ? elem1[7 :0] : reduct_val[7 :0];
                         VSEW_16: result_d[15:0] = (elem1[15:0] > reduct_val[15:0]) ? elem1[15:0] : reduct_val[15:0];
@@ -296,7 +297,7 @@ module vproc_elem #(
             end
             ELEM_VREDMAX: begin
                 result_d = reduct_val;
-                if (~pipe_in_ctrl_i.vl_part_0) begin
+                if (reduction_active) begin
                     unique case (pipe_in_ctrl_i.eew)
                         VSEW_8:  result_d[7 :0] = ($signed(elem1[7 :0]) > $signed(reduct_val[7 :0])) ? elem1[7 :0] : reduct_val[7 :0];
                         VSEW_16: result_d[15:0] = ($signed(elem1[15:0]) > $signed(reduct_val[15:0])) ? elem1[15:0] : reduct_val[15:0];

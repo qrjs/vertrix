@@ -189,8 +189,9 @@ int main(int argc, char **argv) {
             top->rst_ni = 1;
             top->eval();
 
-            int end_cnt    = 0, // count number of cycles after address 0 was requested
+            int end_cnt    = 0, // count number of drain cycles after program end
                 abort_cnt  = 0; // count number of cycles since imem_req_o/dmem_req_o last toggled
+            bool drain_mode = false;
             while (end_cnt < extra_cycles) {
 
                 // if ABORT_CYCLES is defined, then it specifies the number of cycles after which
@@ -207,13 +208,13 @@ int main(int argc, char **argv) {
                 bool     imem_valid = top->imem_addr_o < mem_sz;
                 unsigned imem_addr  = top->imem_addr_o & ~(mem_w/8-1);
                 imem_rdata_queue[0] = 0;
-                if (imem_valid) {
+                if (!drain_mode && imem_valid) {
                     for (i = 0; i < mem_w / 8; i++) {
                         imem_rdata_queue[0] |= ((int64_t)mem[imem_addr+i]) << (i*8);
                     }
                 }
-                imem_rvalid_queue[0] = top->imem_req_o;
-                imem_err_queue   [0] = !imem_valid;
+                imem_rvalid_queue[0] = (!drain_mode) && top->imem_req_o;
+                imem_err_queue   [0] = (!drain_mode) && !imem_valid;
 
                 // ===== 处理数据内存请求 =====
                 bool     dmem_valid = top->dmem_addr_o < mem_sz;
@@ -282,7 +283,16 @@ int main(int argc, char **argv) {
                 // log data
                 log_cycle(top, tfp, fcsv);
 
-                if (end_cnt > 0 || (top->dmem_req_o == 1 && top->dmem_addr_o == 0) || top->core_sleep_o) {
+                // Match the RTL testbench termination convention on address 0,
+                // but keep clocking for a short drain period so outstanding
+                // vector and custom-unit writes can retire. During drain mode
+                // the instruction side is stalled, which avoids fetching from
+                // address 0 and tripping an illegal instruction trap.
+                if ((top->imem_req_o == 1 && top->imem_addr_o == 0) ||
+                    (top->dmem_req_o == 1 && top->dmem_addr_o == 0)) {
+                    drain_mode = true;
+                }
+                if (drain_mode || end_cnt > 0 || top->core_sleep_o) {
                     end_cnt++;
                 }
                 abort_cnt = (top->imem_req_o == imem_req_o_tmp && top->dmem_req_o == dmem_req_o_tmp) ? abort_cnt + 1 : 0;

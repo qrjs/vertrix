@@ -43,6 +43,7 @@ module vproc_unit_mux import vproc_pkg::*; #(
         output logic                                 pipe_out_pend_clear_o,
         output logic    [1:0]                        pipe_out_pend_clear_cnt_o,
         output logic                                 pipe_out_instr_done_o,
+        output logic                                 pipe_out_no_stall_o,
 
         output logic                                 pending_load_o,
         output logic                                 pending_store_o,
@@ -266,6 +267,7 @@ module vproc_unit_mux import vproc_pkg::*; #(
         pipe_out_pend_clear_o     =          DONT_CARE_ZERO ?             '0  :             'x   ;
         pipe_out_pend_clear_cnt_o =          DONT_CARE_ZERO ?             '0  :             'x   ;
         pipe_out_instr_done_o     =          DONT_CARE_ZERO ?             '0  :             'x   ;
+        pipe_out_no_stall_o       =          DONT_CARE_ZERO ?             '0  :             'x   ;
         for (int i = 0; i < UNIT_CNT; i++) begin
             if (UNITS[i] & unit_queue_deq_valid & (op_unit'(i) == unit_queue_deq_unit)) begin
                 pipe_out_valid_o          = unit_out_valid         [i];
@@ -280,6 +282,7 @@ module vproc_unit_mux import vproc_pkg::*; #(
                 pipe_out_pend_clear_o     = unit_out_pend_clear    [i];
                 pipe_out_pend_clear_cnt_o = unit_out_pend_clear_cnt[i];
                 pipe_out_instr_done_o     = unit_out_instr_done    [i];
+                pipe_out_no_stall_o       = op_unit'(i) == UNIT_LSU;
             end
         end
     end
