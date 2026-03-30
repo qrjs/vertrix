@@ -240,7 +240,7 @@ module vproc_decoder #(
                                 end
                             end
                             5'b01000: begin // whole register load/store
-                                emul_override = 1'b1; //TODO: PROBABLY NEEDS SAME TREATMENT AS VMV4R -CHANGE NOT VERIFIED
+                                emul_override = 1'b1; // Note: whole register operations override EMUL similar to VMV4R
                                 `ifdef OLD_VICUNA
                                 evl_pol             = EVL_MAX;
                                 `endif

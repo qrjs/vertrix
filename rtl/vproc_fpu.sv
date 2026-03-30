@@ -7,11 +7,13 @@ module vproc_fpu #(
         parameter int unsigned        FPU_OP_W       = 64,   // DIV unit operand width in bits.  Operates on 32 bit wide operands (SEW8 and SEW16 should be extended in regunpack)
         parameter type                CTRL_T         = logic,
         `ifdef RISCV_ZVFH
-        parameter fpnew_pkg::fpu_features_t       FPU_FEATURES       = vproc_pkg::RV32ZVFH,           //TODO:Need to pass these all the way to the top level for easy adjustments
+        // FPU features with FP16+FP32 support. Can be overridden at instantiation.
+        parameter fpnew_pkg::fpu_features_t       FPU_FEATURES       = vproc_pkg::RV32ZVFH,
         `else
-        parameter fpnew_pkg::fpu_features_t       FPU_FEATURES       = vproc_pkg::RV32ZVE32F,        // FP32 vector mode without FP16 support
+        // FPU features with FP32-only support. Can be overridden at instantiation.
+        parameter fpnew_pkg::fpu_features_t       FPU_FEATURES       = vproc_pkg::RV32ZVE32F,
         `endif
-        
+
         `ifdef RISCV_ZVFH
         parameter fpnew_pkg::fpu_implementation_t FPU_IMPLEMENTATION = vproc_pkg::ZVFH_NOREGS
         `else
@@ -268,7 +270,8 @@ module vproc_fpu #(
     logic [FPU_OP_W/8-1:0] vl_mask;
 
     assign vl_mask        = ~pipe_out_ctrl_o.vl_part_0 ? ({(FPU_OP_W/8){1'b1}} >> (~pipe_out_ctrl_o.vl_part)) : '0;
-    assign pipe_out_mask_o = (pipe_out_ctrl_o.mode.fpu.masked ? pipe_in_mask_i : {(FPU_OP_W/8){1'b1}}) & vl_mask; //TODO: may need to buffer or pass the input operand mask as metadata for masked operations
+    // Output mask combines input mask (for masked ops) with VL-based mask
+    assign pipe_out_mask_o = (pipe_out_ctrl_o.mode.fpu.masked ? pipe_in_mask_i : {(FPU_OP_W/8){1'b1}}) & vl_mask;
 
     ///////////////////////////////////////////////////////////////////////////
     // Per-lane active mask from input VL (fixes deadlock when VL < pipeline width)
@@ -417,7 +420,8 @@ module vproc_fpu #(
 
             if(unit_ctrl_q.first_cycle == 1'b1) begin
                 operand_0_fpu = FPU_OP_W'(pipe_in_op2_i_q[31:0]);
-                operand_1_fpu = FPU_OP_W'(pipe_in_op1_i_q[31:0]);//First cycle of reduction operation uses vs1[0]  //TODO: MAKE THESE GENERIC
+                // First cycle of FP min/max reduction uses vs1[0] as initial value
+                operand_1_fpu = FPU_OP_W'(pipe_in_op1_i_q[31:0]);
                 operand_2_fpu = '0;//This operand is unused by these operations
             end else begin
                 operand_0_fpu = FPU_OP_W'(pipe_in_op2_i_q[31:0]);
@@ -541,9 +545,10 @@ module vproc_fpu #(
                     `else
                     .DivSqrtSel    (fpnew_pkg::TH32),                    // FP32-only div/sqrt path for Zve32f
                     `endif
-                    .Features      (FPU_FEATURES),        //TODO:Pass in from top level ideally (or define as part of package? if so cant swap them)
-                    .Implementation(FPU_IMPLEMENTATION),  //TODO:Pass in from top level ideally (or define as part of package? if so cant swap them)
-                    .TagType       (fpu_tag)              // Type for metadata to pass through with instruction.  allows for pipelined operation
+                    // FPU features and implementation passed as module parameters
+                    .Features      (FPU_FEATURES),
+                    .Implementation(FPU_IMPLEMENTATION),
+                    .TagType       (fpu_tag)              // Type for metadata to pass through with instruction
                     //Missing 2 config parameters :TrueSIMDClass and EnableSIMDMask - may be necessary for FP16 SIMD OPERATION
                 ) fpnew_i (
                     .clk_i         (clk_i),                               

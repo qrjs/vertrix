@@ -77,7 +77,7 @@ module vproc_elem #(
             end
             assign state_res_ready = ~state_res_valid_q | pipe_out_ready_i;
         end else begin
-            // TODO result needs always to be buffered as well
+            // Result is forwarded combinatorially (no buffering) for this configuration
             always_comb begin
                 state_res_valid_q = state_res_valid_d;
                 state_res_q       = state_res_d;

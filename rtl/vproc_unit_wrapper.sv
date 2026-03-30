@@ -500,7 +500,8 @@ module vproc_unit_wrapper import vproc_pkg::*; #(
             end
             assign pipe_out_instr_done_o     = (~flushing_q & unit_out_ctrl.last_cycle & ~unit_out_ctrl.requires_flush                                ) | flushing_last_cycle;
             assign pipe_out_pend_clear_o     = (~flushing_q & unit_out_ctrl.last_cycle & ~unit_out_ctrl.requires_flush & ~unit_out_ctrl.mode.elem.xreg) | flushing_last_cycle;
-            assign pipe_out_pend_clear_cnt_o = unit_out_ctrl.emul; // TODO reductions always have destination EMUL == 1
+            // Note: Reductions always write to scalar destination (EMUL=1 per spec)
+            assign pipe_out_pend_clear_cnt_o = unit_out_ctrl.emul;
         end 
         else if (UNIT == UNIT_DIV) begin
             CTRL_T                 unit_out_ctrl;
@@ -558,7 +559,8 @@ module vproc_unit_wrapper import vproc_pkg::*; #(
             vproc_fpu #(
                 .FPU_OP_W         ( MAX_OP_W                                    ),
                 .CTRL_T           ( CTRL_T                                      )
-                //TODO: PASS IN FP_NEW CONFIG HERE
+                // FPU_FEATURES and FPU_IMPLEMENTATION use defaults from vproc_pkg
+                // (RV32ZVFH/ZVE32F based on RISCV_ZVFH define)
             ) fpu (
                 .clk_i            ( clk_i                                       ),
                 .async_rst_ni     ( async_rst_ni                                ),
@@ -788,7 +790,7 @@ module vproc_unit_wrapper import vproc_pkg::*; #(
                 
                    pipe_out_instr_done_o     = (~flushing_q & unit_out_ctrl.last_cycle & ~unit_out_ctrl.requires_flush ) | flushing_last_cycle;
                    pipe_out_pend_clear_o     = (~flushing_q & unit_out_ctrl.last_cycle & ~unit_out_ctrl.requires_flush ) | flushing_last_cycle;
-                   pipe_out_pend_clear_cnt_o = flushing_emul_q; // TODO reductions always have destination EMUL == 1
+                   pipe_out_pend_clear_cnt_o = flushing_emul_q; // Note: Reductions always write to scalar destination (EMUL=1)
                    pipe_out_res_flags_o[0].vreg_idx        = $bits(pipe_out_res_flags_o[0].vreg_idx)'(unit_out_ctrl.vreg_idx);
                    
 

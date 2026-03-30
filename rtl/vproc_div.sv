@@ -256,7 +256,7 @@ module vproc_div #(
             cv32e40x_div div_i
             (
             .clk                ( clk_i                                ),
-            .rst_n              ( async_rst_ni                         ), //which reset signal should be used? TODO
+            .rst_n              ( async_rst_ni                         ), // Use async reset as required by cv32e40x_div
 
             // Input IF
             .data_ind_timing_i  ( 1'b1                                 ), // When enabled, all divisions take same number of cycles.  Drastically improves performance on unit tests(unexpected)

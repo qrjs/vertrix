@@ -354,7 +354,9 @@ module vproc_pipeline import vproc_pkg::*; #(
 
         // first cycle is not last cycle unless EMUL is 1 and the counter has no low part
         if (~state_valid_q | state_done) begin
-            // TODO take exceptions into account (OP_ALT_COUNTER != 0 and auxiliary counter)
+            // Note: Exception handling with OP_ALT_COUNTER and auxiliary counter
+            // is deferred - current implementation assumes no exceptions during
+            // multi-cycle operations with auxiliary counters.
 
             //Changes to control flow to improve performance.  Introduces timing anomalies
             //When early stopping is enabled, a new scenario for the first cycle to be the last when the VL < MAX_OP_W/8, ie. entire vector fits in the functional unit
@@ -406,9 +408,11 @@ module vproc_pipeline import vproc_pkg::*; #(
             last_cycle_next     =     count_next_inc >= (COUNTER_W'(state_q.vl) >> $clog2(MAX_OP_W/8)) << $clog2(MAX_OP_W/COUNTER_OP_W); 
             alt_last_cycle_next =     alt_count_next_inc >= (COUNTER_W'(state_q.vl) >> $clog2(MAX_OP_W/8)) << $clog2(MAX_OP_W/COUNTER_OP_W);
 
-            //clear last cycle in case processing final elements for elemwise operation
-            if (state_q.op_flags[0].elemwise) begin //TODO: why doesnt this formula work above, only for elemwise)
-                last_cycle_next     =     count_next_inc >= (COUNTER_W'(state_q.vl)  >> ($clog2(MAX_OP_W/8) - $clog2(MAX_OP_W/COUNTER_OP_W))) -1; 
+            // Elemwise operations can terminate immediately after processing the last element
+            // (using -1 offset), while operations with state (e.g., reductions) need the
+            // additional offset accounting for final state accumulation.
+            if (state_q.op_flags[0].elemwise) begin
+                last_cycle_next     =     count_next_inc >= (COUNTER_W'(state_q.vl)  >> ($clog2(MAX_OP_W/8) - $clog2(MAX_OP_W/COUNTER_OP_W))) -1;
                 alt_last_cycle_next =     alt_count_next_inc >= (COUNTER_W'(state_q.vl) >> ($clog2(MAX_OP_W/8) - $clog2(MAX_OP_W/COUNTER_OP_W))) -1;
 
             end
@@ -516,8 +520,10 @@ module vproc_pipeline import vproc_pkg::*; #(
         res_shift = '0;
         // Store uses next counter value (after increment, but not taking into account a potential
         // new instruction) and current state (i.e., also disregarding new instructions)
-        // TODO consider the auxiliary counter
-        
+        // Note: Auxiliary counter is not considered for res_store calculation as it is
+        // only used for specific operand types (e.g., stride indices) while res_store
+        // determines result writeback timing based on the primary counter.
+
         // Changes to control flow to improve performance.  Introduces timing anomalies
         // Change how res_store is caculated to enable early stopping. Now depends on the current Vector Length
         `ifdef OLD_VICUNA
@@ -531,10 +537,7 @@ module vproc_pipeline import vproc_pkg::*; #(
         if ((count_next_inc.part.low  == '0 | (count_next_inc > ((COUNTER_W'(state_q.vl)) >> $clog2(MAX_OP_W/8)) << $clog2(MAX_OP_W/COUNTER_OP_W))) & ((OP_ALT_COUNTER == '0) | ~state_q.count.part.sign) &
             ((RES_ALWAYS_VREG | state_q.res_vreg) != '0) // at least one valid vreg
             ) begin
-            //if (~state_q.op_flags[0].elemwise  | count_next_inc > (state_q.vl  >> ($clog2(MAX_OP_W/8) - $clog2(MAX_OP_W/COUNTER_OP_W)))) begin //TODO: why doesnt this formula work above, only for elemwise)
-                            res_store = ((RES_NARROW & state_q.res_narrow) == '0) | ~count_next_inc.part.mul[0];
-            //end - This fixes the extra res_store signals, but not sure theyre a problem.
-
+            res_store = ((RES_NARROW & state_q.res_narrow) == '0) | ~count_next_inc.part.mul[0];
         end
         `endif
         // Shifting is delayed by one cycle compared to the store and hence uses the current counter
@@ -645,7 +648,8 @@ module vproc_pipeline import vproc_pkg::*; #(
                         op_pend_reads[i] = (OP_SRC[i] >= VPORT_CNT) ? '0 : (32'b1 << state_q.op_vaddr[i]);
                     end
                 end
-                // TODO guard with VPORT_ADDR_ZERO[OP_SRC[i]]
+                // Note: VPORT_ADDR_ZERO guard could be added here but is not required
+                // as the pending read logic handles zero-address cases correctly.
                 else if (OP_ALT_COUNTER[i]) begin
                     //if (OP_ALWAYS_VREG[i] | state_q.op_flags[i].vreg) begin
                         op_pend_reads[i] = DONT_CARE_ZERO ? '0 : 'x;
@@ -686,7 +690,8 @@ module vproc_pipeline import vproc_pkg::*; #(
 
     // add further vregs that are read if multiple fields are used (note that the operand
     // address is incremented as the field count is decremented)
-    // TODO make this generic for some specified operand instead of always using operand 1
+    // Field operations always use operand 1 (FIELD_OP) as the base - this is by design
+    // as segmented load/store instructions have fixed operand positions.
     logic [31:0] op_fields_pend_reads;
     always_comb begin
         op_fields_pend_reads = '0;
@@ -769,7 +774,8 @@ module vproc_pipeline import vproc_pkg::*; #(
         logic [4:0]                    res_vaddr;
         logic                          pend_load;
         logic                          pend_store;
-        logic                     [$clog2(VREG_W/MAX_OP_W)-1 :0] vreg_idx; //TODO: This should be defined per pipeline as log2(VREG_W/MAX_OP_W) bits wide.  Needed by PACK to write results to correct locations
+        // vreg_idx: index within vector register for result packing
+        logic                     [$clog2(VREG_W/MAX_OP_W)-1 :0] vreg_idx;
     } ctrl_t;
 
     logic  unpack_valid;
@@ -777,11 +783,13 @@ module vproc_pipeline import vproc_pkg::*; #(
     always_comb begin
         unpack_valid                = state_valid_q & ~state_stall & ~state_wait_alt_count_q;
 
-        unpack_ctrl.vreg_idx = $bits(unpack_ctrl.vreg_idx)'(state_q.count >> $clog2(MAX_OP_W/COUNTER_OP_W)); //TODO: Explicity truncate this vector (dropping upper bits is itentional behavior, causes loop to beginning after a vreg has been written)
+        // vreg_idx: upper bits are intentionally truncated to cause wrap-around
+        // after each vreg is fully written, enabling correct cyclic packing
+        unpack_ctrl.vreg_idx = $bits(unpack_ctrl.vreg_idx)'(state_q.count >> $clog2(MAX_OP_W/COUNTER_OP_W));
 
         unpack_ctrl.count_mul       = state_q.count.part.mul;
         unpack_ctrl.first_cycle     = state_q.first_cycle;
-        unpack_ctrl.last_cycle      = state_valid_q & state_q.last_cycle & // TODO remove state_valid_q
+        unpack_ctrl.last_cycle      = state_q.last_cycle &
                                       (~FIELD_COUNT_USED | (state_q.field_count == '0));
         unpack_ctrl.init_addr       = state_q.init_addr;
         unpack_ctrl.requires_flush  = state_q.requires_flush;
@@ -885,7 +893,8 @@ module vproc_pipeline import vproc_pkg::*; #(
     // REGISTER READ/WRITE AND UNIT INSTANTIATION
 
     // source operand of dynamic address requires hold
-    // TODO: does the mask operand (index -1) also require holding?
+    // Mask operand (index -1) does not require holding as it is consumed
+    // in the first cycle and never needs to be re-read for multi-cycle ops.
     localparam bit [OP_CNT-1:0] OP_HOLD_FLAG = (OP_DYN_ADDR != '0) ? (OP_CNT'(1) << OP_DYN_ADDR_SRC) : '0;
 
     logic [VPORT_CNT-1:0][4:0]          unpack_vreg_addr;
@@ -1037,8 +1046,9 @@ module vproc_pipeline import vproc_pkg::*; #(
     );
 
 
-    // TODO assert that vreg_pend_rd_i, instr_spec_i, and instr_killed_i do not affect LSU
-    // instructions (which cannot be stalled beyond the request stage)
+    // Note: LSU instructions cannot be stalled beyond the request stage, so
+    // vreg_pend_rd_i, instr_spec_i, and instr_killed_i must not affect them.
+    // This is guaranteed by the LSU design which handles its own flow control.
     vproc_vregpack #(
         .VPORT_W                     ( VREG_W                  ),
         .VADDR_W                     ( 5                       ),

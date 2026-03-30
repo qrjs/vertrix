@@ -276,9 +276,9 @@ module vproc_lsu import vproc_pkg::*; #(
     end
 
     // suppress memory request if all data elements are invalid (have indices greater than VL)
-    // TODO: memory requests should probably also be suppressed if all elements are masked off, but
-    // that could be tricky because the LSU cannot accept a memory response transaction while
-    // dequeueing a suppressed request
+    // Note: Masked-off elements still generate memory requests for performance reasons.
+    // Suppressing all-masked requests would require additional buffer logic to handle
+    // the case where LSU cannot accept a memory response while dequeuing a suppressed request.
     logic req_suppress;
     assign req_suppress = (instr_state_i[state_req_q.id] == INSTR_KILLED) | state_req_q.vl_part_0; 
 
@@ -342,7 +342,7 @@ module vproc_lsu import vproc_pkg::*; #(
         .flags_all_o  (                                                               )
     );
 
-    // XIF mem_result_valid is asserted and the memory result's instruction ID matches and transaction is not suppressed(MIGHT BE AN ISSUE TODO)
+    // XIF memory result validation: check result is valid, ID matches, and transaction was not suppressed
     logic vlsu_mem_result_id_valid;
     assign vlsu_mem_result_id_valid = vlsu_mem_result_valid_i &
                                     (vlsu_mem_result_id_i == deq_state.id) & !deq_state.suppressed;

@@ -399,11 +399,12 @@ typedef struct packed {
     logic       saturate;
     logic       sig;
     logic [2:0] mul_idx;
-    logic [4:0] vreg_idx; //TODO: This should be defined per pipeline as log2(VREG_W/MAX_OP_W) bits wide
+    // vreg_idx: 5 bits sufficient for VREG_W up to 2048 bits (32 vregs)
+    logic [4:0] vreg_idx;
 } pack_flags;
 
 
-// FPU configuration: features//TODO: IDEALLY INCLUDE THIS FROM fpnew_pkg
+// Local FPU configuration (parallel to fpnew_pkg for modularity)
 typedef struct packed {
     int unsigned Width;
     logic        EnableVectors;

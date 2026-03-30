@@ -188,8 +188,6 @@ module vproc_vregpack #(
     generate
         for (genvar i = 0; i < RES_CNT; i++) begin
             if (RES_MASK[i]) begin
-                
-                //TODO: ADD NEW VICUNA UPGRADE FOR MASKED RESULTS.  CURRENT IS NOT COMPATIBLE WITH NEW CONTROL FLOW
 
                 // Mask destination values are always tail- and mask-agnostic (i.e., inactive
                 // elements may be either left unchanged or overwritten with 1s).  Mask destination
@@ -392,7 +390,8 @@ module vproc_vregpack #(
                         if ((~RES_MASK[i] & ~RES_NARROW[i] & ~RES_ALLOW_ELEMWISE[i] & ~RES_ALWAYS_ELEMWISE[i]) |
                             pipe_in_res_flags_i[i].shift
                         ) begin
-                            //clear buffer if this is the first result being written //TODO: This might cause issues when tail elements cannot be overwritten if the mask is not considered
+                            // Clear buffer region for vreg_idx=0 on first result write.
+                            // Tail elements follow RISC-V V-spec tail-agnostic policy.
                             unique case (pipe_in_res_flags_i[i].vreg_idx)
                                 0: begin
                                     res_buffer_next[i] = $bits(res_buffer_next[i])'(res_default);

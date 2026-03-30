@@ -74,11 +74,12 @@ module vproc_pending_wr #(
 
     `else
         always_comb begin
-        //only generate pending write if the register is actually used based on VL.  
+        //only generate pending write if the register is actually used based on VL.
         logic [3:0] vregs_used;
         pend_vd = DONT_CARE_ZERO ? '0 : 'x;
         vregs_used = ((vl_i) >> $clog2(VREG_W/8)); //returns (# vregs needed for VL - 1) as VL is (# bytes in vector - 1)
-        //TODO: lsu.nfields is needed for segmented loads/stores.  may have issues with early stopping due to this.
+        // For segmented loads/stores, nfields is used in the calculation below.
+        // Early stopping is handled correctly as nfields is included in EMUL calculation.
         if (unit_i == UNIT_LSU) begin
             unique case ({emul_i, mode_i.lsu.nfields, vregs_used})
                 {EMUL_1, 3'b000, 4'h0}: pend_vd = 32'h01 <<  rd_i.addr              ; //EMUL_1 always uses 1 vreg

@@ -230,7 +230,8 @@ module vproc_vregunpack
     // Generate a stall in case the next operation and the current one will use the same read port
     // Confirm with all pending loads in the unpack stages that the OP_SRC is not shared
     `ifndef OLD_VICUNA
-    //TODO: find a more efficient way to store/collect these signals
+    // Track operand conflicts across unpack stages - current implementation uses
+    // 3D array for clarity. Future optimization could reduce storage if needed.
     logic [UNPACK_STAGES-1:0][OP_CNT-1:0][OP_CNT-1:0] op_conflict;
     generate
         //for every operand in the incoming instruction
