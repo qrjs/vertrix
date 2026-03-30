@@ -871,7 +871,7 @@ module ibex_core import ibex_pkg::*; #(
   ///////////////////
 
   // Minor alert - core is in a recoverable state
-  // TODO add I$ ECC errors here
+  // Note: I$ ECC errors not included as I$ is not used in this configuration
   assign alert_minor_o = 1'b0;
 
   // Major alert - core is unrecoverable
