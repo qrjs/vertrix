@@ -17,7 +17,7 @@
 
 # -- Project information -----------------------------------------------------
 
-project = 'Vicuna'
+project = 'Vertrix (derived from Vicuna)'
 copyright = '2022, TU Wien'
 author = 'Michael Platzer'
 

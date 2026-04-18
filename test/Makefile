@@ -89,8 +89,15 @@ lint-verilator:
 $(TESTS_ALL): %: $$(addsuffix .vmem,$$(basename $$(filter-out $$(TEST_SRC_EXCLUDES),$$(if $$(wildcard %),$$(wildcard %/*.S %/*.c),$$(wildcard %.S %.c)))))
 	@if [ -d $@ ]; then                                                       \
 	    cd $@;                                                                \
+	    cfg_override_args="";                                                 \
 	else                                                                      \
 	    cd $(dir $@);                                                         \
+	    cfg_override_args="";                                                 \
+	    cfg_override_file="$$(basename $@).conf";                             \
+	    if [ -f "$$cfg_override_file" ]; then                                 \
+	        cfg_override_args=$$(awk 'NF && $$1 !~ /^#/' "$$cfg_override_file" \
+	            2>/dev/null | head -n 1);                                     \
+	    fi;                                                                   \
 	fi;                                                                       \
 	rm -f progs.txt;                                                          \
 	test_vmems=($(abspath $^));                                               \
@@ -113,12 +120,17 @@ $(TESTS_ALL): %: $$(addsuffix .vmem,$$(basename $$(filter-out $$(TEST_SRC_EXCLUD
 	    if [ -z "$$line" ] || [ "$${line:0:1}" = "#" ]; then                  \
 	        continue;                                                         \
 	    fi;                                                                   \
-	    printf "\033[0;34m[CONF]\033[0;0m $@ $$line\n";                       \
+	    sim_cfg="$$line $$cfg_override_args";                                 \
+	    printf "\033[0;34m[CONF]\033[0;0m $@ $$sim_cfg\n";                    \
 	    sim_dir=`mktemp -d`;                                                  \
 	    echo "[INFO] Writing temporary files to $${sim_dir}";                 \
+	    sim_override_args="";                                                 \
+	    if [ -n "$(WRITEBACK_STAGE)" ]; then                                  \
+	        sim_override_args="$$sim_override_args WRITEBACK_STAGE=$(WRITEBACK_STAGE)"; \
+	    fi;                                                                   \
 	    set -o pipefail;                                                      \
 	    make -f $(TEST_DIR)/../sim/Makefile $(SIMULATOR) PROJ_DIR=$$sim_dir   \
-	        $$line PROG_PATHS=progs.txt SIM_ABORT_CYCLES=$(SIM_ABORT_CYCLES) ENABLE_SVA=1   \
+	        $$sim_cfg $$sim_override_args PROG_PATHS=progs.txt SIM_ABORT_CYCLES=$(SIM_ABORT_CYCLES) ENABLE_SVA=1   \
 	        ENABLE_PERF_COUNTERS=1                                                \
 	        TRACE_SIGS="`cat $(TEST_DIR)/trace-sigs.conf`" 2>&1 | tee sim.log; \
 	    if [ $$? -ne 0 ]; then                                                \

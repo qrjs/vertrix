@@ -621,6 +621,19 @@ module vproc_unit_wrapper import vproc_pkg::*; #(
             assign unit_out_res   = unit_out_hold_valid_q ? unit_out_res_hold_q  : unit_out_res_raw;
             assign unit_out_mask  = unit_out_hold_valid_q ? unit_out_mask_hold_q : unit_out_mask_raw;
 
+            // FPU output backpressure is handled through the hold registers above.
+            // Unlike the ELEM path, no separate unit_out_stall signal is needed here:
+            // once a beat is captured into the hold buffer, ctrl/res/mask stay stable
+            // until unit_out_stage_ready consumes that beat.
+            property p_fpu_hold_stable;
+                @(posedge clk_i)
+                disable iff (~async_rst_ni || ~sync_rst_ni)
+                    unit_out_hold_valid_q & ~unit_out_stage_ready |=> $stable(unit_out_ctrl_hold_q) &
+                                                                     $stable(unit_out_res_hold_q) &
+                                                                     $stable(unit_out_mask_hold_q);
+            endproperty
+            assert property (p_fpu_hold_stable);
+
            // Unit control for reduction operations.  Ignored for normal FPU operations
            // output buffer signals
             logic                is_reduction_q, is_reduction_d;
@@ -744,9 +757,6 @@ module vproc_unit_wrapper import vproc_pkg::*; #(
             assign pipe_out_valid_o = (unit_out_valid) | flushing_q;
             assign unit_out_stage_ready = pipe_out_ready_i & ~flushing_q;
             assign unit_out_ready       = unit_out_stage_ready | ~unit_out_hold_valid_q;
-            //unit out stall signal missing.  Needed for ELEM operation?
-            //assign pipe_out_valid_o = (unit_out_valid & ~unit_out_stall) | flushing_q;
-            //assign unit_out_ready   = pipe_out_ready_i & ~flushing_q & ~unit_out_stall;
 
             logic [4:0] base_vaddr;
             assign base_vaddr = flushing_q ? flushing_vaddr_q : unit_out_ctrl.res_vaddr;

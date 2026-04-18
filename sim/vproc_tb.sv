@@ -9,6 +9,7 @@ module vproc_tb #(
         parameter int unsigned MEM_SZ          = 262144,
         parameter int unsigned MEM_LATENCY     = 1,
         parameter int unsigned VMEM_W          = 32,
+        parameter bit          WRITEBACK_STAGE = 1'b0,
         parameter int unsigned ICACHE_SZ       = 0,   // instruction cache size in bytes
         parameter int unsigned ICACHE_LINE_W   = 128, // instruction cache line width in bits
         parameter int unsigned DCACHE_SZ       = 0,   // data cache size in bytes
@@ -45,6 +46,7 @@ module vproc_tb #(
         .VMEM_W        ( VMEM_W                      ),
         .VREG_TYPE     ( vproc_pkg::VREG_XLNX_RAM32M ),
         .MUL_TYPE      ( vproc_pkg::MUL_XLNX_DSP48E1 ),
+        .WritebackStage( WRITEBACK_STAGE             ),
         .ICACHE_SZ     ( ICACHE_SZ                   ),
         .ICACHE_LINE_W ( ICACHE_LINE_W               ),
         .DCACHE_SZ     ( DCACHE_SZ                   ),

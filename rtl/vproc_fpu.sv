@@ -48,6 +48,7 @@ module vproc_fpu #(
     typedef struct packed {
         CTRL_T     ctrl;
         logic      last_cycle;
+        logic [FPU_OP_W/8-1:0] mask;
     } fpu_tag; 
 
     ///////////////////////////////////////////////////////////////////////////
@@ -56,6 +57,7 @@ module vproc_fpu #(
 
     logic [FPU_OP_W  -1:0] pipe_in_op1_i_d, pipe_in_op2_i_d, pipe_in_op3_i_d;
     logic [FPU_OP_W  -1:0] pipe_in_op1_i_q, pipe_in_op2_i_q, pipe_in_op3_i_q;
+    logic [FPU_OP_W/8-1:0] pipe_in_mask_i_d, pipe_in_mask_i_q;
     CTRL_T                unit_ctrl_d, unit_ctrl_q;
 
     logic                 data_valid_i_d, data_valid_i_q;
@@ -86,6 +88,7 @@ module vproc_fpu #(
     fpu_tag unit_in_fpu_tag;
     assign unit_in_fpu_tag.ctrl = unit_ctrl_q;
     assign unit_in_fpu_tag.last_cycle = last_cycle;
+    assign unit_in_fpu_tag.mask = pipe_in_mask_i_q;
 
     fpu_tag [FPU_OP_W/ 32 - 1:0] unit_out_fpu_tag;
 
@@ -140,6 +143,7 @@ module vproc_fpu #(
         pipe_in_op1_i_d = pipe_in_op1_i;
         pipe_in_op2_i_d = pipe_in_op2_i;
         pipe_in_op3_i_d = pipe_in_op3_i;
+        pipe_in_mask_i_d = pipe_in_mask_i;
     end
 
 
@@ -229,6 +233,7 @@ module vproc_fpu #(
             pipe_in_op1_i_q   <= '0;
             pipe_in_op2_i_q   <= '0;
             pipe_in_op3_i_q   <= '0;
+            pipe_in_mask_i_q  <= '0;
             unit_ctrl_q       <= '0;
             data_valid_i_q    <= 1'b0;
             reduction_buffer_q <= '0;
@@ -236,6 +241,7 @@ module vproc_fpu #(
             pipe_in_op1_i_q   <= '0;
             pipe_in_op2_i_q   <= '0;
             pipe_in_op3_i_q   <= '0;
+            pipe_in_mask_i_q  <= '0;
             unit_ctrl_q       <= '0;
             data_valid_i_q    <= 1'b0;
             reduction_buffer_q <= '0;
@@ -243,6 +249,7 @@ module vproc_fpu #(
             pipe_in_op1_i_q   <= pipe_in_op1_i_d;
             pipe_in_op2_i_q   <= pipe_in_op2_i_d;
             pipe_in_op3_i_q   <= pipe_in_op3_i_d;
+            pipe_in_mask_i_q  <= pipe_in_mask_i_d;
             unit_ctrl_q       <= unit_ctrl_d;
             data_valid_i_q    <= data_valid_i_d;
             reduction_buffer_q <= reduction_buffer_d;
@@ -268,10 +275,20 @@ module vproc_fpu #(
 
     // result byte mask
     logic [FPU_OP_W/8-1:0] vl_mask;
+    logic [FPU_OP_W/8-1:0] out_mask_src;
 
     assign vl_mask        = ~pipe_out_ctrl_o.vl_part_0 ? ({(FPU_OP_W/8){1'b1}} >> (~pipe_out_ctrl_o.vl_part)) : '0;
+    always_comb begin
+        if (rsqrt_active) begin
+            out_mask_src = rsqrt_tag_q.mask;
+        end else if (|fpu_active_lanes) begin
+            out_mask_src = unit_out_fpu_tag[0].mask;
+        end else begin
+            out_mask_src = pipe_in_mask_i_q;
+        end
+    end
     // Output mask combines input mask (for masked ops) with VL-based mask
-    assign pipe_out_mask_o = (pipe_out_ctrl_o.mode.fpu.masked ? pipe_in_mask_i : {(FPU_OP_W/8){1'b1}}) & vl_mask;
+    assign pipe_out_mask_o = (pipe_out_ctrl_o.mode.fpu.masked ? out_mask_src : {(FPU_OP_W/8){1'b1}}) & vl_mask;
 
     ///////////////////////////////////////////////////////////////////////////
     // Per-lane active mask from input VL (fixes deadlock when VL < pipeline width)

@@ -12,6 +12,7 @@ module vproc_top import vproc_pkg::*;
         parameter int unsigned     VMEM_W        = 32,  // vector memory interface width in bits
         parameter vreg_type        VREG_TYPE     = VREG_GENERIC,
         parameter mul_type         MUL_TYPE      = MUL_GENERIC,
+        parameter bit              WritebackStage = 1'b0, // enable Ibex writeback stage
         parameter int unsigned     ICACHE_SZ     = 0,   // instruction cache size in bytes
         parameter int unsigned     ICACHE_LINE_W = 128, // instruction cache line width in bits
         parameter int unsigned     DCACHE_SZ     = 0,   // data cache size in bytes
@@ -173,6 +174,7 @@ module vproc_top import vproc_pkg::*;
         .RV32M                  ( ibex_pkg::RV32MFast                ),
         .ExternalCSRs           ( 0                                  ),  // No external CSRs, use vector CSR interface
         .VLEN                   ( vproc_config::VREG_W               ),  // Vector register length from config
+        .WritebackStage         ( WritebackStage                     ),
         // LOAD-FP, STORE-FP, VECTOR and CUSTOM-0 opcodes
         .CoprocOpcodes          ( 32'h00200E06                       )
     ) u_core (

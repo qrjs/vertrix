@@ -1,6 +1,13 @@
 Vicuna User Guide
 =================
 
+.. note::
+
+   This section documents the inherited Vicuna user guide. It remains useful
+   for configuration, integration, and simulation concepts, but it does not
+   fully describe the additional floating-point and workload-specific work that
+   exists in the current Vertrix repository.
+
 This User Guide is intended for developers who wish to integrate Vicuna into a hardware design,
 or who simply want to evaluate the performance improvements that a vector coprocessor can provide.
 

@@ -1,5 +1,18 @@
+Vertrix documentation (derived from Vicuna)
+===========================================
+
+.. note::
+
+   This documentation tree still contains a large amount of inherited Vicuna
+   user documentation. In this repository, the RTL and tests have been
+   extended beyond the original ``Zve32x`` baseline with additional
+   floating-point and ML-oriented work. Use the inherited pages for core
+   architecture concepts, but consult the top-level ``README.md``,
+   ``THIRD_PARTY_NOTICES.md``, and ``docs/release_audit.md`` for the current
+   repository status and provenance.
+
 Vicuna - a flexible and scalable RISC-V vector coprocessor
-==========================================================
+----------------------------------------------------------
 
 Vicuna is an open-source 32-bit integer vector coprocessor written in SystemVerilog
 that implements version 1.0 of the

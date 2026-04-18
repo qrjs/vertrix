@@ -38,6 +38,7 @@ TRACE_SIGS ?= '*'
 MEM_W       ?= 32
 MEM_SZ      ?= 262144
 MEM_LATENCY ?= 1
+WRITEBACK_STAGE ?= 0
 
 # set configuration of instruction and data caches (both disabled by default)
 ICACHE_SZ     ?= 0
@@ -130,6 +131,7 @@ $(PROJ_DIR)/obj_dir/Vvproc_top.mk: verilator-version-check $(VPROC_CONFIG_PKG) $
 	    -Wno-COMBDLY -Wno-DEPRECATED                                          \
 	    -I$(SIM_DIR)/../rtl/ -I$(SIM_DIR)/../sva/ $$inc $$core $$fp_defs $$fp_inc                \
 	    -GMEM_W=$(MEM_W) -GVMEM_W=$(VMEM_W)                                   \
+	    -GWritebackStage=$(WRITEBACK_STAGE)                                  \
 	    -GICACHE_SZ=$(ICACHE_SZ) -GICACHE_LINE_W=$(ICACHE_LINE_W)             \
 	    -GDCACHE_SZ=$(DCACHE_SZ) -GDCACHE_LINE_W=$(DCACHE_LINE_W)             \
 	    --cc $$fp_src $$src vproc_pkg.sv $(VPROC_CONFIG_PKG) vproc_top.sv              \
@@ -141,6 +143,7 @@ vivado: $(VPROC_CONFIG_PKG)
 	    -tclargs $(SIM_DIR)/../ $(CORE_DIR) $(VPROC_CONFIG_PKG)               \
 	    "MEM_W=$(MEM_W) MEM_SZ=$(MEM_SZ) MEM_LATENCY=$(MEM_LATENCY)           \
 	    VMEM_W=$(VMEM_W)                                                      \
+	    WRITEBACK_STAGE=$(WRITEBACK_STAGE)                                    \
 	    ICACHE_SZ=$(ICACHE_SZ) ICACHE_LINE_W=$(ICACHE_LINE_W)                 \
 	    DCACHE_SZ=$(DCACHE_SZ) DCACHE_LINE_W=$(DCACHE_LINE_W)"                \
 	    $(abspath $(TRACE_FILE)) $(abspath $(PROG_PATHS)) $(TRACE_SIGS)
@@ -148,6 +151,6 @@ vivado: $(VPROC_CONFIG_PKG)
 questa: $(VPROC_CONFIG_PKG)
 	cd $(PROJ_DIR) && $(VSIM) -batch -do 'do $(QUESTA_TCL)                    \
 	    $(SIM_DIR).. $(CORE_DIR) $(VPROC_CONFIG_PKG)                          \
-	    "$(VMEM_W) $(MEM_W) $(MEM_SZ) $(MEM_LATENCY)                          \
+	    "$(VMEM_W) $(MEM_W) $(MEM_SZ) $(MEM_LATENCY) $(WRITEBACK_STAGE)       \
 	    $(ICACHE_SZ) $(ICACHE_LINE_W) $(DCACHE_SZ) $(DCACHE_LINE_W)"          \
 	    $(abspath $(TRACE_FILE)) $(abspath $(PROG_PATHS)) "$(TRACE_SIGS)"'

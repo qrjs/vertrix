@@ -5,7 +5,7 @@
 - Regression entrypoint is now `make -C test`.
 - The default test target runs each suite once instead of re-running the same
   suite through directory aliases and per-test expansion.
-- The following validation command passed:
+- The following broader validation command previously passed:
 
 ```sh
 make -C test lsu alu mul sld elem csr kernel misc fp
@@ -17,6 +17,16 @@ make -C test lsu alu mul sld elem csr kernel misc fp
   - `kernel/mnist_infer_fp32_fc3zero`
   - `kernel/mnist_infer_fp32_norelu`
   - `kernel/mnist_infer_matunit`
+- Additional targeted regression checks passed on April 18, 2026:
+  - `fp/vfadd_masked_pipeline_test`
+  - `fp/vfadd_test`
+  - `fp/vfrsqrt7_test`
+  - `kernel/mnist_infer_fp32`
+- Additional writeback-stage targeted regression checks passed on April 18,
+  2026:
+  - `fp/vfadd_wb_test`
+  - `fp/vfrsqrt7_wb_test`
+  - `fp/vfwmul_illegal_sew_wb_test`
 
 ## Remaining Technical Gaps
 
@@ -30,22 +40,32 @@ make -C test lsu alu mul sld elem csr kernel misc fp
 
 ### Floating-Point
 
-- FP support is usable for the currently checked-in tests, but not complete.
-- `rtl/vproc_decoder.sv` still marks several widening FP operations as TODO or
-  requiring fpnew changes:
-  - `vfwadd`
-  - `vfwsub`
-  - `vfwadd.w`
-  - `vfwsub.w`
-- FP conversion decode currently hardcodes rounding mode in several paths.
-- `rtl/vproc_fpu.sv` still contains configuration and masking TODOs that should
-  be resolved before claiming full FP support.
+- FP support is usable for the currently checked-in tests, including FP32
+  MNIST inference.
+- The earlier widening decode gaps called out in this audit have been filled in
+  the current tree, and the repository now carries dedicated tests for
+  `vfsqrt`, `vfrec7`, `vfrsqrt7`, `vfw*`, and FP reduction paths.
+- A masked FP writeback alignment bug in `rtl/vproc_fpu.sv` has also been fixed
+  and is now covered by `test/fp/vfadd_masked_pipeline_test.S`.
+- The Ibex `WritebackStage=1` coprocessor illegal-instruction path is now wired
+  through WB metadata instead of the old combinational shortcut, and targeted
+  WB regressions are checked in.
+- The FPU result-hold path in `rtl/vproc_unit_wrapper.sv` now has an explicit
+  stability comment and assertion instead of the old unresolved TODO.
+- Remaining FP work is mostly about breadth and confidence rather than the
+  original decode bring-up:
+  - broader masked-FP regression coverage
+  - more configuration coverage outside the checked-in regression set
+  - clearer public documentation of which FP modes are considered production
+    ready
 
 ### Vector / Reduction Semantics
 
-- `rtl/vproc_elem.sv` still notes masked reductions as unsupported.
-- Several pipeline/control comments indicate incomplete handling of exceptional
-  cases and auxiliary counters.
+- Integer reduction behavior is covered better than before, including masked
+  ELEM reductions in the checked-in test suite.
+- Several pipeline/control comments still indicate incomplete handling of
+  exceptional cases and auxiliary counters, especially outside the most common
+  regression paths.
 
 ## External-Origin Risk
 
@@ -53,9 +73,11 @@ This repository cannot currently be represented as wholly self-authored.
 
 ### Explicit Branding / Attribution Still Present
 
-- Top-level `README.md` still identifies the project as `Vicuna`.
-- Documentation under `docs/01_user/` is still written as Vicuna user
-  documentation.
+- Top-level documentation now identifies the repository as a derived
+  Vicuna-class project rather than presenting it as pristine upstream Vicuna.
+- Documentation under `docs/01_user/` is still largely written as inherited
+  Vicuna user documentation, although the docs front page now warns about this
+  scope mismatch.
 - Many source files still carry upstream copyright and SPDX headers.
 
 ### Imported / Derived Code That Must Not Be Misrepresented
@@ -99,8 +121,8 @@ Do not try to remove or obscure origin information. The defensible options are:
    rewrite-first release.
 2. If derived-work release:
    - keep upstream headers
-   - add a `THIRD_PARTY_NOTICES` file
-   - document which directories are imported or modified
+   - keep `THIRD_PARTY_NOTICES.md`
+   - keep documenting which directories are imported or modified
 3. If rewrite-first release:
    - start with fetch/integration, FP decode/wrapper, and top-level docs
    - keep imported code isolated until replacements are complete

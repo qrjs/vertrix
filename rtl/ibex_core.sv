@@ -311,6 +311,9 @@ module ibex_core import ibex_pkg::*; #(
   logic           rf_write_wb;
   logic           outstanding_load_wb;
   logic           outstanding_store_wb;
+  logic           cpi_illegal_id;
+  logic           cpi_illegal_wb;
+  logic [31:0]    cpi_illegal_instr_wb;
 
   // Interrupts
   logic        nmi_mode;
@@ -650,6 +653,8 @@ module ibex_core import ibex_pkg::*; #(
       .ready_wb_i                   ( ready_wb                 ),
       .outstanding_load_wb_i        ( outstanding_load_wb      ),
       .outstanding_store_wb_i       ( outstanding_store_wb     ),
+      .cpi_illegal_wb_i             ( cpi_illegal_wb           ),
+      .cpi_illegal_instr_wb_i       ( cpi_illegal_instr_wb     ),
 
       // Performance Counters
       .perf_jump_o                  ( perf_jump                ),
@@ -658,7 +663,8 @@ module ibex_core import ibex_pkg::*; #(
       .perf_dside_wait_o            ( perf_dside_wait          ),
       .perf_mul_wait_o              ( perf_mul_wait            ),
       .perf_div_wait_o              ( perf_div_wait            ),
-      .instr_id_done_o              ( instr_id_done            )
+      .instr_id_done_o              ( instr_id_done            ),
+      .cpi_illegal_id_o             ( cpi_illegal_id          )
   );
 
   // for RVFI only
@@ -768,6 +774,8 @@ module ibex_core import ibex_pkg::*; #(
     .en_wb_i                        ( en_wb                        ),
     .instr_type_wb_i                ( instr_type_wb                ),
     .pc_id_i                        ( pc_id                        ),
+    .instr_id_i                     ( instr_rdata_id               ),
+    .cpi_illegal_id_i               ( cpi_illegal_id               ),
     .instr_perf_count_id_i          ( instr_perf_count_id          ),
 
     .ready_wb_o                     ( ready_wb                     ),
@@ -776,6 +784,8 @@ module ibex_core import ibex_pkg::*; #(
     .outstanding_store_wb_o         ( outstanding_store_wb         ),
     .pc_wb_o                        ( pc_wb                        ),
     .perf_instr_ret_wb_o            ( perf_instr_ret_wb            ),
+    .cpi_illegal_wb_o               ( cpi_illegal_wb               ),
+    .cpi_illegal_instr_wb_o         ( cpi_illegal_instr_wb         ),
 
     .rf_waddr_id_i                  ( rf_waddr_id                  ),
     .rf_wdata_id_i                  ( rf_wdata_id                  ),
@@ -1185,7 +1195,7 @@ module ibex_core import ibex_pkg::*; #(
         if (i == 0) begin
           if(instr_id_done) begin
             rvfi_stage_halt[i]      <= '0;
-            rvfi_stage_trap[i]      <= illegal_insn_id;
+            rvfi_stage_trap[i]      <= illegal_insn_id | cpi_illegal_id;
             rvfi_stage_intr[i]      <= rvfi_intr_d;
             rvfi_stage_order[i]     <= rvfi_stage_order[i] + 64'(rvfi_stage_valid_d[i]);
             rvfi_stage_insn[i]      <= rvfi_insn_id;

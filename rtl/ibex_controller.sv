@@ -57,6 +57,8 @@ module ibex_controller #(
     input  logic [31:0]           lsu_addr_last_i,         // for mtval
     input  logic                  load_err_i,
     input  logic                  store_err_i,
+    input  logic                  cpi_illegal_wb_i,
+    input  logic [31:0]           cpi_illegal_instr_wb_i,
     output logic                  wb_exception_o,          // Instruction in WB taking an exception
 
     // jump/branch signals
@@ -121,6 +123,8 @@ module ibex_controller #(
   logic debug_mode_q, debug_mode_d;
   logic load_err_q, load_err_d;
   logic store_err_q, store_err_d;
+  logic cpi_illegal_wb_q, cpi_illegal_wb_d;
+  logic [31:0] cpi_illegal_instr_wb_q, cpi_illegal_instr_wb_d;
   logic exc_req_q, exc_req_d;
   logic illegal_insn_q, illegal_insn_d;
 
@@ -132,6 +136,7 @@ module ibex_controller #(
   logic ebrk_insn_prio;
   logic store_err_prio;
   logic load_err_prio;
+  logic cpi_illegal_wb_prio;
 
   logic stall;
   logic halt_if;
@@ -139,7 +144,7 @@ module ibex_controller #(
   logic flush_id;
   logic illegal_dret;
   logic illegal_umode;
-  logic exc_req_lsu;
+  logic exc_req_wb;
   logic special_req;
   logic special_req_pc_change;
   logic special_req_flush_only;
@@ -217,12 +222,14 @@ module ibex_controller #(
   assign exc_req_d = (ecall_insn | ebrk_insn | illegal_insn_d | instr_fetch_err) &
                      (ctrl_fsm_cs != FLUSH);
 
-  // LSU exception requests
-  assign exc_req_lsu = store_err_i | load_err_i;
+  // Writeback-side exception requests
+  assign exc_req_wb = store_err_i | load_err_i | cpi_illegal_wb_i;
+  assign cpi_illegal_wb_d = cpi_illegal_wb_i;
+  assign cpi_illegal_instr_wb_d = cpi_illegal_instr_wb_i;
 
 
   // special requests: special instructions, pipeline flushes, exceptions...
-  // All terms in these expressions are qualified by instr_valid_i except exc_req_lsu which can come
+  // All terms in these expressions are qualified by instr_valid_i except exc_req_wb which can come
   // from the Writeback stage with no instr_valid_i from the ID stage
 
   // These special requests only cause a pipeline flush and in particular don't cause a PC change
@@ -230,7 +237,7 @@ module ibex_controller #(
   assign special_req_flush_only = wfi_insn | csr_pipe_flush;
 
   // These special requests cause a change in PC
-  assign special_req_pc_change = mret_insn | dret_insn | exc_req_d | exc_req_lsu;
+  assign special_req_pc_change = mret_insn | dret_insn | exc_req_d | exc_req_wb;
 
   // generic special request signal, applies to all instructions
   assign special_req = special_req_pc_change | special_req_flush_only;
@@ -247,6 +254,7 @@ module ibex_controller #(
       ebrk_insn_prio       = 0;
       store_err_prio       = 0;
       load_err_prio        = 0;
+      cpi_illegal_wb_prio  = 0;
 
       // Note that with the writeback stage store/load errors occur on the instruction in writeback,
       // all other exception/faults occur on the instruction in ID/EX. The faults from writeback
@@ -255,6 +263,9 @@ module ibex_controller #(
         store_err_prio = 1'b1;
       end else if (load_err_q) begin
         load_err_prio  = 1'b1;
+      end else if (cpi_illegal_wb_q) begin
+        illegal_insn_prio   = 1'b1;
+        cpi_illegal_wb_prio = 1'b1;
       end else if (instr_fetch_err) begin
         instr_fetch_err_prio = 1'b1;
       end else if (illegal_insn_q) begin
@@ -267,7 +278,7 @@ module ibex_controller #(
     end
 
     // Instruction in writeback is generating an exception so instruction in ID must not execute
-    assign wb_exception_o = load_err_q | store_err_q | load_err_i | store_err_i;
+    assign wb_exception_o = load_err_q | store_err_q | load_err_i | store_err_i | cpi_illegal_wb_i;
   end else begin : g_no_wb_exceptions
     always_comb begin
       instr_fetch_err_prio = 0;
@@ -276,6 +287,7 @@ module ibex_controller #(
       ebrk_insn_prio       = 0;
       store_err_prio       = 0;
       load_err_prio        = 0;
+      cpi_illegal_wb_prio  = 0;
 
       if (instr_fetch_err) begin
         instr_fetch_err_prio = 1'b1;
@@ -667,8 +679,7 @@ module ibex_controller #(
         // here.
 
         // exceptions: set exception PC, save PC and exception cause
-        // exc_req_lsu is high for one clock cycle only (in DECODE)
-        if (exc_req_q || store_err_q || load_err_q) begin
+        if (exc_req_q || store_err_q || load_err_q || cpi_illegal_wb_q) begin
           pc_set_o         = 1'b1;
           pc_set_spec_o    = 1'b1;
           pc_mux_o         = PC_EXC;
@@ -678,8 +689,8 @@ module ibex_controller #(
             // With the writeback stage present whether an instruction accessing memory will cause
             // an exception is only known when it is in writeback. So when taking such an exception
             // epc must come from writeback.
-            csr_save_id_o  = ~(store_err_q | load_err_q);
-            csr_save_wb_o  = store_err_q | load_err_q;
+            csr_save_id_o  = ~(store_err_q | load_err_q | cpi_illegal_wb_q);
+            csr_save_wb_o  = store_err_q | load_err_q | cpi_illegal_wb_q;
           end else begin : g_no_writeback_mepc_save
             csr_save_id_o  = 1'b0;
           end
@@ -694,7 +705,7 @@ module ibex_controller #(
             end
             illegal_insn_prio: begin
               exc_cause_o = EXC_CAUSE_ILLEGAL_INSN;
-              csr_mtval_o = instr_i;
+              csr_mtval_o = cpi_illegal_wb_prio ? cpi_illegal_instr_wb_q : instr_i;
             end
             ecall_insn_prio: begin
               exc_cause_o = (priv_mode_i == PRIV_LVL_M) ? EXC_CAUSE_ECALL_MMODE :
@@ -826,6 +837,8 @@ module ibex_controller #(
       enter_debug_mode_prio_q <= 1'b0;
       load_err_q              <= 1'b0;
       store_err_q             <= 1'b0;
+      cpi_illegal_wb_q        <= 1'b0;
+      cpi_illegal_instr_wb_q  <= '0;
       exc_req_q               <= 1'b0;
       illegal_insn_q          <= 1'b0;
     end else begin
@@ -836,6 +849,8 @@ module ibex_controller #(
       enter_debug_mode_prio_q <= enter_debug_mode_prio_d;
       load_err_q              <= load_err_d;
       store_err_q             <= store_err_d;
+      cpi_illegal_wb_q        <= cpi_illegal_wb_d;
+      cpi_illegal_instr_wb_q  <= cpi_illegal_instr_wb_d;
       exc_req_q               <= exc_req_d;
       illegal_insn_q          <= illegal_insn_d;
     end

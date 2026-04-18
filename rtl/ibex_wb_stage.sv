@@ -23,6 +23,8 @@ module ibex_wb_stage #(
   input  logic                     en_wb_i,
   input  ibex_pkg::wb_instr_type_e instr_type_wb_i,
   input  logic [31:0]              pc_id_i,
+  input  logic [31:0]              instr_id_i,
+  input  logic                     cpi_illegal_id_i,
   input  logic                     instr_perf_count_id_i,
 
   output logic                     ready_wb_o,
@@ -31,6 +33,8 @@ module ibex_wb_stage #(
   output logic                     outstanding_store_wb_o,
   output logic [31:0]              pc_wb_o,
   output logic                     perf_instr_ret_wb_o,
+  output logic                     cpi_illegal_wb_o,
+  output logic [31:0]              cpi_illegal_instr_wb_o,
 
   input  logic [4:0]               rf_waddr_id_i,
   input  logic [31:0]              rf_wdata_id_i,
@@ -67,7 +71,9 @@ module ibex_wb_stage #(
 
     logic           wb_valid_q;
     logic [31:0]    wb_pc_q;
+    logic [31:0]    wb_instr_q;
     logic           wb_count_q;
+    logic           cpi_illegal_wb_q;
     wb_instr_type_e wb_instr_type_q;
 
     logic           wb_valid_d;
@@ -96,7 +102,9 @@ module ibex_wb_stage #(
         rf_wdata_wb_q   <= rf_wdata_id_i;
         wb_instr_type_q <= instr_type_wb_i;
         wb_pc_q         <= pc_id_i;
+        wb_instr_q      <= instr_id_i;
         wb_count_q      <= instr_perf_count_id_i;
+        cpi_illegal_wb_q <= cpi_illegal_id_i;
       end
     end
 
@@ -114,12 +122,15 @@ module ibex_wb_stage #(
     assign outstanding_store_wb_o = wb_valid_q & (wb_instr_type_q == WB_INSTR_STORE);
 
     assign pc_wb_o = wb_pc_q;
+    assign cpi_illegal_wb_o = wb_valid_q & cpi_illegal_wb_q;
+    assign cpi_illegal_instr_wb_o = wb_instr_q;
 
     assign instr_done_wb_o = wb_valid_q & wb_done;
 
     // Increment instruction retire counters for valid instructions which are not lsu errors
     assign perf_instr_ret_wb_o = instr_done_wb_o & wb_count_q &
-                                 ~(lsu_resp_valid_i & lsu_resp_err_i);
+                                 ~(lsu_resp_valid_i & lsu_resp_err_i) &
+                                 ~cpi_illegal_wb_q;
 
     // Forward data that will be written to the RF back to ID to resolve data hazards. The flopped
     // rf_wdata_wb_q is used rather than rf_wdata_wb_o as the latter includes read data from memory
@@ -145,11 +156,15 @@ module ibex_wb_stage #(
     logic           unused_rst;
     wb_instr_type_e unused_instr_type_wb;
     logic [31:0]    unused_pc_id;
+    logic [31:0]    unused_instr_id;
+    logic           unused_cpi_illegal_id;
 
     assign unused_clk            = clk_i;
     assign unused_rst            = rst_ni;
     assign unused_instr_type_wb  = instr_type_wb_i;
     assign unused_pc_id          = pc_id_i;
+    assign unused_instr_id       = instr_id_i;
+    assign unused_cpi_illegal_id = cpi_illegal_id_i;
 
     assign outstanding_load_wb_o  = 1'b0;
     assign outstanding_store_wb_o = 1'b0;
@@ -157,6 +172,8 @@ module ibex_wb_stage #(
     assign rf_write_wb_o          = 1'b0;
     assign rf_wdata_fwd_wb_o      = 32'b0;
     assign instr_done_wb_o        = 1'b0;
+    assign cpi_illegal_wb_o       = 1'b0;
+    assign cpi_illegal_instr_wb_o = '0;
   end
 
   assign rf_wdata_wb_mux[1]    = rf_wdata_lsu_i;

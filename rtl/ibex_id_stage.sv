@@ -128,6 +128,7 @@ module ibex_id_stage #(
     input  logic                      cpi_wait_i,
     input  logic                      cpi_res_valid_i,
     input  logic [31:0]               cpi_res_i,
+    output logic                      cpi_illegal_id_o,
 
     // Interrupt signals
     input  logic                      csr_mstatus_mie_i,
@@ -179,6 +180,8 @@ module ibex_id_stage #(
     input logic                       ready_wb_i,
     input logic                       outstanding_load_wb_i,
     input logic                       outstanding_store_wb_i,
+    input logic                       cpi_illegal_wb_i,
+    input logic [31:0]                cpi_illegal_instr_wb_i,
 
     // Performance Counters
     output logic                      perf_jump_o,    // executing a jump instr
@@ -202,6 +205,7 @@ module ibex_id_stage #(
   logic        wfi_insn_dec;
 
   logic        wb_exception;
+  logic        cpi_illegal_id;
 
   logic        branch_in_dec;
   logic        branch_spec, branch_set_spec, branch_set_raw_spec;
@@ -542,13 +546,14 @@ module ibex_id_stage #(
   // Controller //
   ////////////////
 
-  // TODO Find a way to receive illegal instruction exceptions from the coprocessor when using the
-  // write-back stage. Currently, when WritebackStage is enabled this leads to a combinational loop
-  // with following signals:
-  // illegal_insn_o -> rf_ren_[a|b] -> rf_rd_[a|b]_hz -> stall_ld_hz -> instr_executing_spec ->
-  // instr_executing -> cpi_req_o
+  // Coprocessor illegal is detected once the request is accepted. In the two-stage
+  // configuration it can directly feed the local illegal instruction path. With
+  // the writeback stage enabled we export the accepted-illegal metadata so it can
+  // be retired and trapped from WB without recreating the historical comb loop.
+  assign cpi_illegal_id   = cpi_req_o & cpi_gnt_i & cpi_instr_illegal_i;
+  assign cpi_illegal_id_o = cpi_illegal_id;
   assign illegal_insn_o = instr_valid_i & (illegal_insn_dec | illegal_csr_insn_i |
-                          (~WritebackStage & cpi_req_o & cpi_gnt_i & cpi_instr_illegal_i));
+                          (~WritebackStage & cpi_illegal_id));
 
   ibex_controller #(
     .WritebackStage  ( WritebackStage  ),
@@ -594,6 +599,8 @@ module ibex_id_stage #(
       .lsu_addr_last_i                ( lsu_addr_last_i         ),
       .load_err_i                     ( lsu_load_err_i          ),
       .store_err_i                    ( lsu_store_err_i         ),
+      .cpi_illegal_wb_i               ( cpi_illegal_wb_i        ),
+      .cpi_illegal_instr_wb_i         ( cpi_illegal_instr_wb_i  ),
       .wb_exception_o                 ( wb_exception            ),
 
       // jump/branch control
@@ -1088,7 +1095,7 @@ module ibex_id_stage #(
   // Signal which instructions to count as retired in minstret, all traps along with ebrk and
   // ecall instructions are not counted.
   assign instr_perf_count_id_o = ~ebrk_insn & ~ecall_insn_dec & ~illegal_insn_dec &
-      ~illegal_csr_insn_i & ~instr_fetch_err_i;
+      ~illegal_csr_insn_i & ~instr_fetch_err_i & ~cpi_illegal_id;
 
   // An instruction is ready to move to the writeback stage (or retire if there is no writeback
   // stage)

@@ -21,7 +21,7 @@ set log_signals $7
 set dv_utils ""
 set prim ""
 
-lassign $params_var VMEM_W MEM_W MEM_SZ MEM_LATENCY ICACHE_SZ ICACHE_LINE_W DCACHE_SZ DCACHE_LINE_W
+lassign $params_var VMEM_W MEM_W MEM_SZ MEM_LATENCY WRITEBACK_STAGE ICACHE_SZ ICACHE_LINE_W DCACHE_SZ DCACHE_LINE_W
 
 # VREG_TYPE=2 is translated to vproc_pkg::VREG_ASIC
 set VREG_TYPE "2"
@@ -60,6 +60,7 @@ foreach file $src_list {vlog -work work $file +define+$main_core +incdir+$prim+$
 
 vopt +acc vproc_tb -o vproc_tb_opt -debugdb -G VMEM_W=$VMEM_W      \
      -G MEM_W=$MEM_W -G MEM_SZ=$MEM_SZ -G MEM_LATENCY=$MEM_LATENCY \
+     -G WRITEBACK_STAGE=$WRITEBACK_STAGE                            \
      -G ICACHE_SZ=$ICACHE_SZ -G ICACHE_LINE_W=$ICACHE_LINE_W       \
      -G DCACHE_SZ=$DCACHE_SZ -G DCACHE_LINE_W=$DCACHE_LINE_W       \
      -G VREG_TYPE=$VREG_TYPE -G MUl_TYPE=$MUL_TYPE                 \
